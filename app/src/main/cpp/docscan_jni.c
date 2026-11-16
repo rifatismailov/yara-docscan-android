@@ -11,6 +11,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include <android/log.h>
@@ -112,6 +114,7 @@ typedef struct
   char lnk_target[512];
   char lnk_args[512];
   char archive_docs[1024];
+  char archive_entries[4096];  // JSON tokens: names of the first-level files of a plain ZIP (Android: APK in a zip)
   char* vba;
   struct ds_part* parts;
   int n_parts;
@@ -220,6 +223,14 @@ static void docscan_capture(YR_OBJECT* m, DOCSCAN_STATE* st)
   docscan_copy_string(m, "vba_evidence", st->vba_evidence, sizeof(st->vba_evidence));
   docscan_copy_string(m, "lnk_target", st->lnk_target, sizeof(st->lnk_target));
   docscan_copy_string(m, "lnk_args", st->lnk_args, sizeof(st->lnk_args));
+
+  int na = (int) yr_object_get_integer(m, "number_of_archive_entries");
+  for (int i = 0; i < na && i < 1024; i++)
+  {
+    SIZED_STRING* nm = yr_object_get_string(m, "archive_entries[%i].name", i);
+    if (nm != NULL && nm->length > 0)
+      docscan_list_add(st->archive_entries, sizeof(st->archive_entries), nm->c_string);
+  }
 
   int np = (int) yr_object_get_integer(m, "number_of_parts");
   if (np > 0 && np <= 1024)
@@ -455,13 +466,14 @@ static void build_docscan_json(YR_RULES* rules, DOCSCAN_STATE* st, strbuf* b)
   sb_printf(b, ",\"findings_text\":[%s]", st->findings_text);
   sb_printf(b, ",\"yara_descriptions\":[%s]", st->descriptions);
   sb_printf(b, ",\"details\":[%s]", st->details);
+  sb_printf(b, ",\"archive_entries\":[%s]", st->archive_entries);
 
   const docscan_disarm_info* d = &st->ds;
   sb_printf(b,
-            ",\"disarm_plan\":{\"needed\":%s,\"macro\":%d,\"remote_template\":%d,"
+            ",\"disarm_plan\":{\"needed\":%s,\"type\":%d,\"macro\":%d,\"remote_template\":%d,"
             "\"protocol_handler\":%d,\"dde\":%d,\"embedded\":%d,\"rtf_objupdate\":%d,"
             "\"lnk_delete\":%d,\"quarantine\":%d}",
-            d->high ? "true" : "false", d->macro, d->remote_template, d->protocol_handler,
+            d->high ? "true" : "false", d->type, d->macro, d->remote_template, d->protocol_handler,
             d->dde_auto, d->embedded, d->rtf_objupdate, d->lnk_bad, d->quarantine);
   sb_puts(b, "}");
 }
@@ -493,20 +505,17 @@ static const char* file_vars_type(const uint8_t* h, size_t n, const char* ext)
 }
 
 // name: display name of the document (content URIs have no real path); dir: its folder or "".
-static void file_vars_set(YR_SCANNER* scanner, const char* name, const char* dir, int fd)
+static void file_vars_set(YR_SCANNER* scanner, const char* name, const char* dir, const uint8_t* h, size_t n)
 {
   char ext[64] = "";
   const char* dot = strrchr(name, '.');
   if (dot && dot != name && strlen(dot) < sizeof(ext))
     for (size_t i = 0; (ext[i] = (char) tolower((unsigned char) dot[i])); i++)
       ;
-  uint8_t h[16];
-  ssize_t n = pread(fd, h, sizeof(h), 0);
-  if (n < 0) n = 0;
   yr_scanner_define_string_variable(scanner, "filename", name);
   yr_scanner_define_string_variable(scanner, "filepath", dir);
   yr_scanner_define_string_variable(scanner, "extension", ext);
-  yr_scanner_define_string_variable(scanner, "filetype", file_vars_type(h, (size_t) n, ext));
+  yr_scanner_define_string_variable(scanner, "filetype", file_vars_type(h, n < 16 ? n : 16, ext));
   yr_scanner_define_string_variable(scanner, "owner", "");
 }
 
@@ -541,6 +550,20 @@ static void throw_ex(JNIEnv* env, const char* msg)
 {
   jclass c = (*env)->FindClass(env, "yara/docscan/android/scan/DocScanException");
   if (c != NULL) (*env)->ThrowNew(env, c, msg);
+}
+
+static jbyteArray to_bytes(JNIEnv* env, strbuf* out)
+{
+  if (out->oom || out->s == NULL)
+  {
+    free(out->s);
+    throw_ex(env, "out of memory");
+    return NULL;
+  }
+  jbyteArray arr = (*env)->NewByteArray(env, (jsize) out->len);
+  if (arr != NULL) (*env)->SetByteArrayRegion(env, arr, 0, (jsize) out->len, (const jbyte*) out->s);
+  free(out->s);
+  return arr;
 }
 
 JNIEXPORT jint JNI_OnLoad(JavaVM* vm, void* reserved)
@@ -626,15 +649,30 @@ Java_yara_docscan_android_scan_NativeYara_save(JNIEnv* env, jclass cls, jlong h,
   return r == ERROR_SUCCESS;
 }
 
-// Loads rules saved with save(); returns 0 when the file is missing or incompatible.
-JNIEXPORT jlong JNICALL
-Java_yara_docscan_android_scan_NativeYara_load(JNIEnv* env, jclass cls, jstring jpath)
+static size_t fd_stream_read(void* ptr, size_t size, size_t count, void* user_data)
 {
-  const char* path = (*env)->GetStringUTFChars(env, jpath, NULL);
+  int fd = (int) (intptr_t) user_data;
+  size_t want = size * count, got = 0;
+  while (got < want)
+  {
+    ssize_t n = read(fd, (char*) ptr + got, want - got);
+    if (n <= 0) break;
+    got += (size_t) n;
+  }
+  return size ? got / size : 0;
+}
+
+// Loads rules saved with save() from an open descriptor (the sandboxed worker cannot open files);
+// returns 0 when the data is missing or incompatible.
+JNIEXPORT jlong JNICALL
+Java_yara_docscan_android_scan_NativeYara_loadFd(JNIEnv* env, jclass cls, jint fd)
+{
+  YR_STREAM stream = {0};
+  stream.user_data = (void*) (intptr_t) fd;
+  stream.read = fd_stream_read;
   YR_RULES* rules = NULL;
-  int r = yr_rules_load(path, &rules);
-  (*env)->ReleaseStringUTFChars(env, jpath, path);
-  return r == ERROR_SUCCESS ? (jlong) (intptr_t) rules : 0;
+  lseek(fd, 0, SEEK_SET);
+  return yr_rules_load_stream(&stream, &rules) == ERROR_SUCCESS ? (jlong) (intptr_t) rules : 0;
 }
 
 JNIEXPORT void JNICALL
@@ -649,35 +687,90 @@ Java_yara_docscan_android_scan_NativeYara_version(JNIEnv* env, jclass cls)
   return (*env)->NewStringUTF(env, YR_VERSION);
 }
 
-// Scans an open file descriptor (the caller keeps ownership) -> the docscan JSON object as UTF-8
-// bytes (document strings may hold invalid UTF-8, which NewStringUTF would reject).
+static int write_all(int fd, const unsigned char* p, size_t n)
+{
+  while (n > 0)
+  {
+    ssize_t w = write(fd, p, n);
+    if (w <= 0) return -1;
+    p += w;
+    n -= (size_t) w;
+  }
+  return 0;
+}
+
+// The PLAN half of docscan_disarm (cli/yara.c do_disarm in the sandbox worker): decide and cure in
+// memory, write the cured bytes to out_fd. The broker (app process) does backup / replace / delete.
+static void plan_disarm(const uint8_t* data, size_t len, DOCSCAN_STATE* st, int out_fd, strbuf* b)
+{
+  unsigned char* cured = NULL;
+  size_t cured_len = 0;
+  char action[256] = "";
+  int kind = docscan_disarm_plan(data, len, &st->ds, &cured, &cured_len, action, sizeof(action));
+  if (kind == DOCSCAN_DISARM_REPLACE && (out_fd < 0 || write_all(out_fd, cured, cured_len) != 0))
+  {
+    kind = DOCSCAN_DISARM_FAILED;
+    snprintf(action, sizeof(action), "failed:write");
+  }
+  docscan_disarm_free(cured);
+  sb_printf(b, ",\"disarm_result\":{\"kind\":%d,\"action\":\"", kind);
+  sb_json(b, action);
+  sb_printf(b, "\",\"cured_size\":%zu}", kind == DOCSCAN_DISARM_REPLACE ? cured_len : (size_t) 0);
+}
+
+/*
+ * Scans an open file descriptor (ownership stays with the caller) -> the docscan JSON object as UTF-8
+ * bytes (document strings may hold invalid UTF-8, which NewStringUTF would reject).
+ *
+ * plan_disarm: when the policy asks for a cure (same condition as cli/yara.c: a HIGH or a meta.disarm
+ * action), plan it on the same bytes and add "disarm_result"; the cured file goes to out_fd.
+ */
 JNIEXPORT jbyteArray JNICALL
-Java_yara_docscan_android_scan_NativeYara_scanFd(
-    JNIEnv* env, jclass cls, jlong h, jint fd, jstring jname, jstring jdir, jint timeout)
+Java_yara_docscan_android_scan_NativeYara_scanFd(JNIEnv* env, jclass cls, jlong h, jint fd,
+                                                 jstring jname, jstring jdir, jint timeout,
+                                                 jboolean jplan, jint out_fd)
 {
   YR_RULES* rules = (YR_RULES*) (intptr_t) h;
   if (rules == NULL) { throw_ex(env, "rules are not loaded"); return NULL; }
 
+  struct stat sbuf;
+  if (fstat(fd, &sbuf) != 0) { throw_ex(env, "fstat failed"); return NULL; }
+  size_t len = (size_t) sbuf.st_size;
+  const uint8_t* data = (const uint8_t*) "";
+  void* map = NULL;
+  if (len > 0)
+  {
+    map = mmap(NULL, len, PROT_READ, MAP_PRIVATE, fd, 0);
+    if (map == MAP_FAILED) { throw_ex(env, "mmap failed"); return NULL; }
+    data = (const uint8_t*) map;
+  }
+
   YR_SCANNER* scanner = NULL;
   if (yr_scanner_create(rules, &scanner) != ERROR_SUCCESS)
   {
+    if (map) munmap(map, len);
     throw_ex(env, "yr_scanner_create failed");
     return NULL;
   }
 
-  SCAN_ARGS* args = (SCAN_ARGS*) calloc(1, sizeof(SCAN_ARGS));  // ~50 KB: keep it off the stack
-  if (args == NULL) { yr_scanner_destroy(scanner); throw_ex(env, "out of memory"); return NULL; }
+  SCAN_ARGS* args = (SCAN_ARGS*) calloc(1, sizeof(SCAN_ARGS));  // ~55 KB: keep it off the stack
+  if (args == NULL)
+  {
+    yr_scanner_destroy(scanner);
+    if (map) munmap(map, len);
+    throw_ex(env, "out of memory");
+    return NULL;
+  }
 
   const char* name = (*env)->GetStringUTFChars(env, jname, NULL);
   const char* dir = (*env)->GetStringUTFChars(env, jdir, NULL);
-  file_vars_set(scanner, name, dir, fd);
+  file_vars_set(scanner, name, dir, data, len);
   (*env)->ReleaseStringUTFChars(env, jname, name);
   (*env)->ReleaseStringUTFChars(env, jdir, dir);
 
   yr_scanner_set_callback(scanner, scan_callback, args);
   if (timeout > 0) yr_scanner_set_timeout(scanner, timeout);
-
-  int r = yr_scanner_scan_fd(scanner, fd);
+  int r = yr_scanner_scan_mem(scanner, data, len);
   yr_scanner_destroy(scanner);
 
   strbuf out = {0};
@@ -688,24 +781,51 @@ Java_yara_docscan_android_scan_NativeYara_scanFd(
   else
   {
     build_docscan_json(rules, &args->dsc, &out);
-    if (r == ERROR_SCAN_TIMEOUT && out.len > 0)
-    {
-      out.len--;  // drop the closing brace, add the flag
-      out.s[out.len] = '\0';
-      sb_puts(&out, ",\"timeout\":true}");
-    }
+    out.len--;  // reopen the root object
+    out.s[out.len] = '\0';
+    if (r == ERROR_SCAN_TIMEOUT) sb_puts(&out, ",\"timeout\":true");
+    DOCSCAN_STATE* st = &args->dsc;
+    if (jplan && st->ds.present && (st->ds.high || st->max_severity == 2))
+      plan_disarm(data, len, st, out_fd, &out);
+    sb_puts(&out, "}");
   }
   docscan_state_free(&args->dsc);
   free(args);
+  if (map) munmap(map, len);
+  return to_bytes(env, &out);
+}
 
-  if (out.oom || out.s == NULL)
+/*
+ * Vendor rules over a piece of data that is not a file of its own (Android: classes*.dex of an APK):
+ * returns a JSON array of the matching vendor rules (policy rules and docscan_info indicators excluded),
+ * the same selection as the Layer-2 re-scan of the VBA / document parts.
+ */
+JNIEXPORT jbyteArray JNICALL
+Java_yara_docscan_android_scan_NativeYara_scanMem(JNIEnv* env, jclass cls, jlong h, jbyteArray jdata,
+                                                  jint len, jstring jname, jint timeout)
+{
+  YR_RULES* rules = (YR_RULES*) (intptr_t) h;
+  if (rules == NULL) { throw_ex(env, "rules are not loaded"); return NULL; }
+  jbyte* data = (*env)->GetByteArrayElements(env, jdata, NULL);
+  if (data == NULL) return NULL;
+
+  char found[4096] = "";
+  char desc[4096] = "";
+  YR_SCANNER* sc = NULL;
+  if (yr_scanner_create(rules, &sc) == ERROR_SUCCESS)
   {
-    free(out.s);
-    throw_ex(env, "out of memory");
-    return NULL;
+    const char* name = (*env)->GetStringUTFChars(env, jname, NULL);
+    file_vars_set(sc, name, "", (const uint8_t*) data, (size_t) len);
+    (*env)->ReleaseStringUTFChars(env, jname, name);
+    vmatch_collect vm = {found, sizeof(found), desc, sizeof(desc)};
+    yr_scanner_set_callback(sc, vendor_match_cb, &vm);
+    if (timeout > 0) yr_scanner_set_timeout(sc, timeout);
+    yr_scanner_scan_mem(sc, (const uint8_t*) data, (size_t) len);
+    yr_scanner_destroy(sc);
   }
-  jbyteArray arr = (*env)->NewByteArray(env, (jsize) out.len);
-  if (arr != NULL) (*env)->SetByteArrayRegion(env, arr, 0, (jsize) out.len, (const jbyte*) out.s);
-  free(out.s);
-  return arr;
+  (*env)->ReleaseByteArrayElements(env, jdata, data, JNI_ABORT);
+
+  strbuf out = {0};
+  sb_printf(&out, "{\"rules\":[%s],\"descriptions\":[%s]}", found, desc);
+  return to_bytes(env, &out);
 }

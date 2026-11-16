@@ -83,6 +83,7 @@ android {
 
     buildFeatures {
         prefab = true   // OpenSSL (libcrypto) for pe.imphash, pe.signatures and the hash module
+        aidl = true     // IScanWorker: the sandboxed scan worker
     }
 
     externalNativeBuild {

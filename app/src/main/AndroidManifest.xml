@@ -49,6 +49,13 @@
                 <data android:mimeType="application/zip" />
             </intent-filter>
         </activity>
+
+        <!-- Sandboxed parser: own process, random isolated uid, no permissions, no file access. -->
+        <service
+            android:name=".scan.IsolatedScanService"
+            android:exported="false"
+            android:isolatedProcess="true"
+            android:process=":scanworker" />
     </application>
 
 </manifest>

@@ -14,8 +14,8 @@ final class NativeYara {
     /** Saves compiled rules (yarac format). */
     static native boolean save(long rules, String path);
 
-    /** Loads rules saved by {@link #save}; 0 if the file is missing or incompatible. */
-    static native long load(String path);
+    /** Loads rules saved by {@link #save} from an open descriptor; 0 if missing or incompatible. */
+    static native long loadFd(int fd);
 
     static native void destroy(long rules);
 
@@ -24,11 +24,17 @@ final class NativeYara {
     /**
      * Scans an open file descriptor (ownership stays with the caller).
      *
-     * @param name    document display name (THOR/LOKI {@code filename} variable)
-     * @param dir     folder of the document or "" ({@code filepath} variable)
-     * @param timeout seconds, 0 = none
+     * @param name        document display name (THOR/LOKI {@code filename} variable)
+     * @param dir         folder of the document or "" ({@code filepath} variable)
+     * @param timeout     seconds, 0 = none
+     * @param planDisarm  when the policy asks for a cure, plan it ({@code disarm_result} in the JSON)
+     * @param curedOutFd  where the cured file is written (DISARM_REPLACE), -1 = none
      * @return the docscan JSON object as UTF-8 bytes
      */
-    static native byte[] scanFd(long rules, int fd, String name, String dir, int timeout)
+    static native byte[] scanFd(long rules, int fd, String name, String dir, int timeout,
+                                boolean planDisarm, int curedOutFd) throws DocScanException;
+
+    /** Vendor rules over a buffer (classes.dex of an APK): {"rules":[..],"descriptions":[..]}. */
+    static native byte[] scanMem(long rules, byte[] data, int len, String name, int timeout)
             throws DocScanException;
 }

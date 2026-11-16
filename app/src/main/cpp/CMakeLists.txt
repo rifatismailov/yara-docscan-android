@@ -29,6 +29,7 @@ set(YARA_MODULES
   ${LY}/modules/pe/authenticode-parser/structs.c
   ${LY}/modules/hash/hash.c
   ${LY}/modules/dotnet/dotnet.c
+  ${LY}/modules/dex/dex.c          # Android: vendor rules over classes.dex
   ${LY}/modules/console/console.c
   ${LY}/modules/string/string.c
   ${LY}/modules/docscan/docscan.c
@@ -106,6 +107,7 @@ target_compile_definitions(yara PRIVATE
   HAVE_LIBCRYPTO=1
   HASH_MODULE=1
   DOTNET_MODULE=1
+  DEX_MODULE=1
   HAVE_CLOCK_GETTIME=1
   HAVE_STDBOOL_H=1
   HAVE_TIMEGM=1

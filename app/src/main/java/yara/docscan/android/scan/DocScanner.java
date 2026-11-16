@@ -1,52 +1,81 @@
 package yara.docscan.android.scan;
 
+import android.content.ComponentName;
 import android.content.ContentResolver;
 import android.content.Context;
-import android.content.res.AssetManager;
+import android.content.Intent;
+import android.content.ServiceConnection;
 import android.database.Cursor;
 import android.net.Uri;
+import android.os.Bundle;
+import android.os.IBinder;
+import android.os.Looper;
 import android.os.ParcelFileDescriptor;
+import android.os.RemoteException;
+import android.os.SystemClock;
 import android.provider.OpenableColumns;
 import android.util.Log;
 
-import org.json.JSONException;
-
 import java.io.File;
-import java.io.FileOutputStream;
 import java.io.IOException;
-import java.io.InputStream;
-import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 
 /**
- * The Android counterpart of {@code yara64 --docscan-json docscan-index.yar <file>}.
+ * The broker side of scanning - the Android counterpart of {@code yara64 --docscan-json docscan-index.yar}.
  *
- * <p>Rules ship in assets/rules (from the yara-docscan submodule). On first use they are copied to
- * the app's private storage and compiled; the compiled set is cached per app version, so later
- * starts only load it.
+ * <p>The hostile file is parsed only by {@link IsolatedScanService} (sandboxed process); this class
+ * opens the file, hands over the descriptor and gets the JSON back. If the worker dies on a file, the
+ * file is reported as ERROR and the worker is started again for the next one.
+ *
+ * <p>All methods block: call them off the main thread.
  */
-public final class DocScanner implements AutoCloseable {
+public final class DocScanner {
     private static final String TAG = "DocScanner";
-    private static final String RULES_ASSET_DIR = "rules";
-    private static final String INDEX = "docscan-index.yar";
-    private static final int SCAN_TIMEOUT_SEC = 120;
+    private static final long BIND_TIMEOUT_MS = 20_000;
 
     private static volatile DocScanner instance;
 
-    private long rules;
+    private final Context app;
+    private final Object lock = new Object();
+    private IScanWorker worker;        // guarded by lock
+    private boolean bound;             // guarded by lock
+    private boolean initialized;       // guarded by lock: the current worker has loaded the rules
+    private String version = "?";
 
-    private DocScanner(long rules) {
-        this.rules = rules;
+    private final ServiceConnection connection = new ServiceConnection() {
+        @Override
+        public void onServiceConnected(ComponentName name, IBinder service) {
+            synchronized (lock) {
+                worker = IScanWorker.Stub.asInterface(service);
+                initialized = false;   // a (re)started worker process has no rules yet
+                lock.notifyAll();
+            }
+        }
+
+        @Override
+        public void onServiceDisconnected(ComponentName name) {
+            Log.w(TAG, "scan worker died");
+            synchronized (lock) {
+                worker = null;
+                initialized = false;
+            }
+        }
+    };
+
+    private DocScanner(Context app) {
+        this.app = app;
     }
 
-    /** The shared scanner; the first call compiles or loads the rules (slow: call off the UI thread). */
+    /** The shared scanner; the first call compiles the rules and starts the worker. */
     public static DocScanner get(Context context) throws DocScanException {
+        checkNotMainThread();
         DocScanner s = instance;
         if (s == null) {
             synchronized (DocScanner.class) {
                 s = instance;
                 if (s == null) {
-                    s = new DocScanner(loadRules(context.getApplicationContext()));
+                    s = new DocScanner(context.getApplicationContext());
+                    s.ensureWorker();
                     instance = s;
                 }
             }
@@ -54,79 +83,127 @@ public final class DocScanner implements AutoCloseable {
         return s;
     }
 
-    public static String yaraVersion() {
-        return NativeYara.version();
+    public String yaraVersion() {
+        return version;
     }
 
-    private static long loadRules(Context ctx) throws DocScanException {
-        long ver = appVersion(ctx);
-        File cache = new File(ctx.getFilesDir(), "rules-" + ver + ".yarc");
-        if (cache.isFile()) {
-            long h = NativeYara.load(cache.getPath());
-            if (h != 0) return h;
-            Log.w(TAG, "cached rules are unusable, recompiling");
-        }
-
-        File dir = new File(ctx.getFilesDir(), "rules-src");
-        deleteTree(dir);
+    /**
+     * Scans a local file.
+     *
+     * @param planDisarm plan the cure the policy asks for ({@link ScanResult#disarmKind})
+     * @param curedOut   where the worker writes the cured file (needed for DISARM_REPLACE), or null
+     */
+    public ScanResult scan(File file, boolean planDisarm, File curedOut) throws DocScanException {
+        String parent = file.getParent();
+        ParcelFileDescriptor in;
         try {
-            copyAssetTree(ctx.getAssets(), RULES_ASSET_DIR, dir);
-        } catch (IOException e) {
-            throw new DocScanException("cannot unpack rules: " + e.getMessage(), e);
-        }
-
-        long t0 = System.nanoTime();
-        long h = NativeYara.compile(new File(dir, INDEX).getPath());
-        Log.i(TAG, "rules compiled in " + (System.nanoTime() - t0) / 1_000_000 + " ms");
-
-        // drop caches of other versions, keep the new one
-        File[] old = ctx.getFilesDir().listFiles((d, n) -> n.startsWith("rules-") && n.endsWith(".yarc"));
-        if (old != null) for (File f : old) f.delete();
-        if (!NativeYara.save(h, cache.getPath())) Log.w(TAG, "cannot cache compiled rules");
-        deleteTree(dir);
-        return h;
-    }
-
-    /** Scans a document behind a content:// or file:// URI. */
-    public ScanResult scan(Context context, Uri uri) throws DocScanException {
-        ContentResolver cr = context.getContentResolver();
-        String name = displayName(cr, uri);
-        try (ParcelFileDescriptor pfd = cr.openFileDescriptor(uri, "r")) {
-            if (pfd == null) throw new DocScanException("cannot open " + uri);
-            return scanFd(pfd.getFd(), name, "");
-        } catch (IOException | SecurityException e) {
-            throw new DocScanException("cannot open " + name + ": " + e.getMessage(), e);
-        }
-    }
-
-    /** Scans a local file. */
-    public ScanResult scan(File file) throws DocScanException {
-        try (ParcelFileDescriptor pfd =
-                     ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY)) {
-            String parent = file.getParent();
-            return scanFd(pfd.getFd(), file.getName(), parent == null ? "" : parent);
+            in = ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY);
         } catch (IOException e) {
             throw new DocScanException("cannot open " + file + ": " + e.getMessage(), e);
         }
+        ParcelFileDescriptor out = null;
+        if (curedOut != null) {
+            try {
+                out = ParcelFileDescriptor.open(curedOut, ParcelFileDescriptor.MODE_WRITE_ONLY
+                        | ParcelFileDescriptor.MODE_CREATE | ParcelFileDescriptor.MODE_TRUNCATE);
+            } catch (IOException e) {
+                close(in);
+                throw new DocScanException("cannot create " + curedOut + ": " + e.getMessage(), e);
+            }
+        }
+        return scanFd(in, file.getName(), parent == null ? "" : parent, planDisarm, out);
     }
 
-    private synchronized ScanResult scanFd(int fd, String name, String dir) throws DocScanException {
-        if (rules == 0) throw new DocScanException("scanner is closed");
-        byte[] json = NativeYara.scanFd(rules, fd, name, dir, SCAN_TIMEOUT_SEC);
+    public ScanResult scan(File file) throws DocScanException {
+        return scan(file, false, null);
+    }
+
+    /** Scans a document behind a content:// or file:// URI (detection only). */
+    public ScanResult scan(Uri uri) throws DocScanException {
+        ContentResolver cr = app.getContentResolver();
+        String name = displayName(cr, uri);
+        ParcelFileDescriptor in;
         try {
-            return ScanResult.parse(name, new String(json, StandardCharsets.UTF_8));
-        } catch (JSONException e) {
-            throw new DocScanException("bad scan output: " + e.getMessage(), e);
+            in = cr.openFileDescriptor(uri, "r");
+        } catch (IOException | SecurityException e) {
+            throw new DocScanException("cannot open " + name + ": " + e.getMessage(), e);
+        }
+        if (in == null) throw new DocScanException("cannot open " + uri);
+        return scanFd(in, name, "", false, null);
+    }
+
+    private ScanResult scanFd(ParcelFileDescriptor in, String name, String dir, boolean plan,
+                              ParcelFileDescriptor out) throws DocScanException {
+        try {
+            IScanWorker w = ensureWorker();
+            Bundle b;
+            try {
+                b = w.scan(in, name, dir, plan, out);
+            } catch (RemoteException e) {
+                // DeadObjectException: the parser crashed (or the watchdog killed a hung scan)
+                Log.e(TAG, "worker died while scanning " + name, e);
+                synchronized (lock) {
+                    if (worker == w) {
+                        worker = null;
+                        initialized = false;
+                    }
+                }
+                return ScanResult.error(name, "parser crashed: the sandboxed worker died on this file");
+            }
+            String err = b.getString("error");
+            byte[] json = b.getByteArray("json");
+            if (err != null || json == null) {
+                return ScanResult.error(name, err != null ? err : "no result");
+            }
+            byte[] dex = b.getByteArray("dex");
+            return ScanResult.parse(name, new String(json, StandardCharsets.UTF_8),
+                    dex == null ? null : new String(dex, StandardCharsets.UTF_8));
+        } finally {
+            close(in);
+            close(out);
         }
     }
 
-    @Override
-    public synchronized void close() {
-        if (rules != 0) {
-            NativeYara.destroy(rules);
-            rules = 0;
+    /** A connected worker with the rules loaded (binds / restarts it as needed). */
+    private IScanWorker ensureWorker() throws DocScanException {
+        File rules = RulesStore.ensureCompiled(app);
+        synchronized (lock) {
+            if (!bound) {
+                Intent i = new Intent(app, IsolatedScanService.class);
+                if (!app.bindService(i, connection, Context.BIND_AUTO_CREATE)) {
+                    throw new DocScanException("cannot start the scan worker");
+                }
+                bound = true;
+            }
+            long deadline = SystemClock.elapsedRealtime() + BIND_TIMEOUT_MS;
+            while (worker == null) {
+                long left = deadline - SystemClock.elapsedRealtime();
+                if (left <= 0) throw new DocScanException("scan worker did not start");
+                try {
+                    lock.wait(left);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new DocScanException("interrupted");
+                }
+            }
+            if (!initialized) {
+                try (ParcelFileDescriptor pfd =
+                             ParcelFileDescriptor.open(rules, ParcelFileDescriptor.MODE_READ_ONLY)) {
+                    String v = worker.init(pfd);
+                    if (v == null) {
+                        // stale or damaged cache: compile again next time
+                        rules.delete();
+                        throw new DocScanException("the worker could not load the rules");
+                    }
+                    version = v;
+                    initialized = true;
+                } catch (IOException | RemoteException e) {
+                    worker = null;
+                    throw new DocScanException("cannot initialise the scan worker: " + e.getMessage(), e);
+                }
+            }
+            return worker;
         }
-        if (instance == this) instance = null;
     }
 
     // ------------------------------------------------------------------ helpers
@@ -144,35 +221,17 @@ public final class DocScanner implements AutoCloseable {
         return last != null ? last : "document";
     }
 
-    private static long appVersion(Context ctx) {
+    private static void close(ParcelFileDescriptor p) {
+        if (p == null) return;
         try {
-            return ctx.getPackageManager().getPackageInfo(ctx.getPackageName(), 0).lastUpdateTime;
-        } catch (Exception e) {
-            return 0;
+            p.close();
+        } catch (IOException ignored) {
         }
     }
 
-    private static void copyAssetTree(AssetManager am, String asset, File target) throws IOException {
-        String[] children = am.list(asset);
-        if (children == null || children.length == 0) {
-            File parent = target.getParentFile();
-            if (parent != null && !parent.isDirectory() && !parent.mkdirs()) {
-                throw new IOException("mkdir " + parent);
-            }
-            try (InputStream in = am.open(asset); OutputStream out = new FileOutputStream(target)) {
-                byte[] buf = new byte[64 * 1024];
-                int n;
-                while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
-            }
-            return;
+    private static void checkNotMainThread() {
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            throw new IllegalStateException("DocScanner blocks: call it off the main thread");
         }
-        if (!target.isDirectory() && !target.mkdirs()) throw new IOException("mkdir " + target);
-        for (String c : children) copyAssetTree(am, asset + "/" + c, new File(target, c));
-    }
-
-    private static void deleteTree(File f) {
-        File[] kids = f.listFiles();
-        if (kids != null) for (File k : kids) deleteTree(k);
-        f.delete();
     }
 }

@@ -81,7 +81,7 @@ public class MainActivity extends AppCompatActivity {
                     scanner = s;
                     progress.setVisibility(View.GONE);
                     pick.setEnabled(true);
-                    status.setText(getString(R.string.rules_ready, DocScanner.yaraVersion(), ms));
+                    status.setText(getString(R.string.rules_ready, s.yaraVersion(), ms));
                     if (pending != null) {
                         scan(pending);
                         pending = null;
@@ -112,7 +112,7 @@ public class MainActivity extends AppCompatActivity {
             ScanResult r = null;
             String err = null;
             try {
-                r = scanner.scan(this, uri);
+                r = scanner.scan(uri);
             } catch (Exception e) {
                 err = e.getMessage();
             }
@@ -162,9 +162,9 @@ public class MainActivity extends AppCompatActivity {
         findings.setText(sb.toString().trim());
 
         try {
-            json.setText(new JSONObject(r.rawJson).toString(2));
+            json.setText(r.json != null ? r.json.toString(2) : r.rawJson());
         } catch (Exception e) {
-            json.setText(r.rawJson);
+            json.setText(r.rawJson());
         }
     }
 
