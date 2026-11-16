@@ -1,14 +1,75 @@
 <resources>
     <string name="app_name">DocScan</string>
-    <string name="pick_document">Обрати документ</string>
-    <string name="loading_rules">Завантаження правил… (перший запуск: компіляція, до хвилини)</string>
+
+    <!-- tabs -->
+    <string name="tab_overview">Захист</string>
+    <string name="tab_journal">Журнал</string>
+    <string name="tab_quarantine">Карантин</string>
+    <string name="tab_scan">Перевірити</string>
+
+    <!-- overview -->
+    <string name="protection_on">Захист увімкнено</string>
+    <string name="protection_off">Захист вимкнено</string>
+    <string name="protection_start">Увімкнути захист</string>
+    <string name="protection_stop">Вимкнути</string>
+    <string name="protection_needs_storage">Щоб стежити за файлами, надайте доступ до файлів (нижче).</string>
+    <string name="stats">Перевірено файлів: %1$d · застосунків: %2$d · загроз: %3$d</string>
+    <string name="watch_limit">Тек забагато для миттєвого нагляду: решту перевіряє періодичний обхід.</string>
+    <string name="section_permissions">Дозволи</string>
+    <string name="section_device">Безпека пристрою</string>
+    <string name="section_settings">Налаштування</string>
+    <string name="perm_storage">Доступ до всіх файлів</string>
+    <string name="perm_storage_why">Щоб перевіряти документи й APK у Download, Telegram, Viber тощо і лікувати їх.</string>
+    <string name="perm_notifications">Сповіщення</string>
+    <string name="perm_notifications_why">Щоб попереджати про загрози.</string>
+    <string name="perm_battery">Робота у фоні без обмежень</string>
+    <string name="perm_battery_why">Щоб система не зупиняла захист для економії батареї.</string>
+    <string name="perm_autostart">Автозапуск (%1$s)</string>
+    <string name="perm_autostart_why">Прошивки Meizu, Xiaomi, Huawei та інші зупиняють фонові застосунки. Дозвольте DocScan автозапуск і роботу у фоні в налаштуваннях телефону.</string>
+    <string name="perm_grant">Надати</string>
+    <string name="perm_open">Відкрити</string>
+    <string name="perm_granted">Надано</string>
+    <string name="setting_cure">Лікувати небезпечні документи</string>
+    <string name="setting_cure_why">Як на ПК: макроси, DDE, віддалені шаблони видаляються з документа (копія — у карантині). Вимкніть, щоб лише сповіщати.</string>
+    <string name="setting_quarantine_apk">Небезпечні APK — у карантин</string>
+    <string name="device_check_again">Перевірити ще раз</string>
+    <string name="results_file">Журнал для SIEM: %1$s</string>
+
+    <!-- journal / quarantine -->
+    <string name="journal_empty">Подій ще немає.</string>
+    <string name="journal_only_threats">Лише загрози</string>
+    <string name="quarantine_empty">Карантин порожній.</string>
+    <string name="quarantine_restore">Відновити</string>
+    <string name="quarantine_delete">Видалити</string>
+    <string name="quarantine_restore_confirm">Повернути файл на місце? Він був визнаний небезпечним: %1$s</string>
+    <string name="quarantine_restored">Відновлено: %1$s</string>
+    <string name="quarantine_from">Звідки: %1$s</string>
+    <string name="close">Закрити</string>
+    <string name="cancel">Скасувати</string>
+
+    <!-- scan -->
+    <string name="pick_document">Обрати файл</string>
+    <string name="loading_rules">Завантаження правил… (перший запуск: компіляція, кілька секунд)</string>
     <string name="rules_ready">YARA %1$s · правила готові за %2$d мс</string>
     <string name="rules_failed">Помилка правил: %1$s</string>
     <string name="scan_failed">Помилка сканування: %1$s</string>
     <string name="scan_time">Перевірено за %1$d мс</string>
     <string name="vendor_rules">Vendor-правила:</string>
-    <string name="disarm_possible">Документ можна знешкодити (буде в наступній версії).</string>
+    <string name="disarm_possible">Документ можна знешкодити: увімкніть захист, і він буде вилікуваний, коли з\'явиться в сховищі.</string>
     <string name="scan_timeout">Сканування перервано за таймаутом, результат може бути неповним.</string>
     <string name="nothing_found">Загроз не знайдено.</string>
     <string name="scan_with_docscan">Перевірити в DocScan</string>
+
+    <!-- service / notifications -->
+    <string name="ch_service">Захист працює</string>
+    <string name="ch_threats">Загрози</string>
+    <string name="ch_device">Безпека пристрою</string>
+    <string name="service_title">DocScan захищає</string>
+    <string name="service_starting">Запуск…</string>
+    <string name="service_status">Тек під наглядом: %1$d · перевірено: %2$d</string>
+    <string name="service_backlog"> · у черзі: %1$d</string>
+    <string name="app_prefix">застосунок</string>
+    <string name="action_uninstall">Видалити</string>
+    <string name="threats_summary">DocScan знайшов загрози</string>
+    <string name="fgs_subtype">Постійний нагляд за файлами і застосунками для виявлення шкідливих документів і APK</string>
 </resources>

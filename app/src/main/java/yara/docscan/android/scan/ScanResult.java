@@ -61,13 +61,13 @@ public final class ScanResult {
         this.dex = dex;
     }
 
-    static ScanResult error(String fileName, String message) {
+    public static ScanResult error(String fileName, String message) {
         return new ScanResult(fileName, "unknown", Verdict.ERROR, new ArrayList<>(), new ArrayList<>(),
                 new ArrayList<>(), new ArrayList<>(), false, false, DISARM_NOT_PLANNED, null, false,
                 message, null, null);
     }
 
-    static ScanResult parse(String fileName, String json, String dexJson) {
+    public static ScanResult parse(String fileName, String json, String dexJson) {
         JSONObject o;
         try {
             o = new JSONObject(json);

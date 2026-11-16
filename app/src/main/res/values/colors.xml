@@ -7,4 +7,8 @@
     <color name="teal_700">#FF018786</color>
     <color name="black">#FF000000</color>
     <color name="white">#FFFFFFFF</color>
+    <color name="verdict_high">#FFC62828</color>
+    <color name="verdict_medium">#FFEF6C00</color>
+    <color name="verdict_info">#FF2E7D32</color>
+    <color name="verdict_other">#FF757575</color>
 </resources>

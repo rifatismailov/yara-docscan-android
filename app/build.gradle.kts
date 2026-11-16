@@ -116,7 +116,9 @@ dependencies {
     implementation(libs.appcompat)
     implementation(libs.material)
     implementation(libs.openssl)
+    implementation(libs.work.runtime)
     testImplementation(libs.junit)
+    testImplementation(libs.org.json)   // the real org.json: android.jar only has stubs
     androidTestImplementation(libs.ext.junit)
     androidTestImplementation(libs.espresso.core)
 }

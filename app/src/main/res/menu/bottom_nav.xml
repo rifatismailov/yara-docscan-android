@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<menu xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:id="@+id/tab_overview" android:icon="@drawable/ic_shield" android:title="@string/tab_overview" />
+    <item android:id="@+id/tab_journal" android:icon="@drawable/ic_list" android:title="@string/tab_journal" />
+    <item android:id="@+id/tab_quarantine" android:icon="@drawable/ic_lock" android:title="@string/tab_quarantine" />
+    <item android:id="@+id/tab_scan" android:icon="@drawable/ic_search" android:title="@string/tab_scan" />
+</menu>

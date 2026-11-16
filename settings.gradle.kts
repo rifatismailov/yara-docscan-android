@@ -21,3 +21,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "yara-docscan-android"
 include(":app")
+include(":testapk")

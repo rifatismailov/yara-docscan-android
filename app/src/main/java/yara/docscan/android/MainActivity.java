@@ -1,181 +1,164 @@
 package yara.docscan.android;
 
 import android.content.Intent;
-import android.graphics.Color;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.view.View;
-import android.widget.Button;
-import android.widget.ProgressBar;
-import android.widget.TextView;
 
 import androidx.activity.result.ActivityResultLauncher;
 import androidx.activity.result.contract.ActivityResultContracts;
+import androidx.annotation.NonNull;
 import androidx.appcompat.app.AppCompatActivity;
 
-import org.json.JSONObject;
+import com.google.android.material.bottomnavigation.BottomNavigationView;
 
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
-import yara.docscan.android.scan.DocScanner;
-import yara.docscan.android.scan.ScanResult;
+import yara.docscan.android.ui.JournalTab;
+import yara.docscan.android.ui.OverviewTab;
+import yara.docscan.android.ui.Permissions;
+import yara.docscan.android.ui.QuarantineTab;
+import yara.docscan.android.ui.ScanTab;
+import yara.docscan.android.watch.Notifier;
+import yara.docscan.android.watch.WatchSettings;
+import yara.docscan.android.watch.WatcherService;
 
 public class MainActivity extends AppCompatActivity {
-    private final ExecutorService worker = Executors.newSingleThreadExecutor();
+    public static final String EXTRA_TAB = "tab";
+    public static final String TAB_OVERVIEW = "overview";
+    public static final String TAB_JOURNAL = "journal";
+    public static final String TAB_QUARANTINE = "quarantine";
+    public static final String TAB_SCAN = "scan";
+    private static final long REFRESH_MS = 2000;
+
+    private final ExecutorService bg = Executors.newSingleThreadExecutor();
+    private final ExecutorService scanBg = Executors.newSingleThreadExecutor();
     private final Handler ui = new Handler(Looper.getMainLooper());
 
-    private Button pick;
-    private ProgressBar progress;
-    private TextView status, file, verdict, findings, json;
-    private volatile DocScanner scanner;
-    private Uri pending;   // a document shared to us before the rules were ready
+    private View vOverview, vJournal, vQuarantine, vScan;
+    private BottomNavigationView nav;
+    private OverviewTab overview;
+    private JournalTab journal;
+    private QuarantineTab quarantine;
+    private ScanTab scan;
+    private String current = TAB_OVERVIEW;
 
     private final ActivityResultLauncher<String[]> picker =
             registerForActivityResult(new ActivityResultContracts.OpenDocument(), uri -> {
-                if (uri != null) scan(uri);
+                if (uri != null) scan.scan(uri);
             });
+
+    private final Runnable ticker = new Runnable() {
+        @Override
+        public void run() {
+            if (TAB_OVERVIEW.equals(current)) overview.refresh();
+            else if (TAB_JOURNAL.equals(current)) journal.refresh();
+            ui.postDelayed(this, REFRESH_MS);
+        }
+    };
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
-        pick = findViewById(R.id.pick);
-        progress = findViewById(R.id.progress);
-        status = findViewById(R.id.status);
-        file = findViewById(R.id.file);
-        verdict = findViewById(R.id.verdict);
-        findings = findViewById(R.id.findings);
-        json = findViewById(R.id.json);
+        Notifier.createChannels(this);
+        vOverview = findViewById(R.id.view_overview);
+        vJournal = findViewById(R.id.view_journal);
+        vQuarantine = findViewById(R.id.view_quarantine);
+        vScan = findViewById(R.id.view_scan);
 
-        pick.setOnClickListener(v -> picker.launch(new String[] {"*/*"}));
-        pending = incomingUri(getIntent());
-        loadRules();
+        overview = new OverviewTab(this, vOverview, bg);
+        journal = new JournalTab(this, vJournal, bg);
+        quarantine = new QuarantineTab(this, vQuarantine, bg);
+        scan = new ScanTab(this, vScan, scanBg, () -> picker.launch(new String[] {"*/*"}));
+
+        nav = findViewById(R.id.nav);
+        nav.setOnItemSelectedListener(item -> {
+            int id = item.getItemId();
+            show(id == R.id.tab_journal ? TAB_JOURNAL : id == R.id.tab_quarantine ? TAB_QUARANTINE
+                    : id == R.id.tab_scan ? TAB_SCAN : TAB_OVERVIEW);
+            return true;
+        });
+
+        // protection was on, but the service is not running (killed, app updated): bring it back
+        if (new WatchSettings(this).enabled() && !WatcherService.running && Permissions.storage(this)) {
+            WatcherService.start(this);
+        }
+        handleIntent(getIntent());
     }
 
     @Override
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
-        Uri uri = incomingUri(intent);
-        if (uri != null) scan(uri);
+        handleIntent(intent);
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        ui.post(ticker);
+        if (TAB_QUARANTINE.equals(current)) quarantine.refresh();
+    }
+
+    @Override
+    protected void onPause() {
+        super.onPause();
+        ui.removeCallbacks(ticker);
     }
 
     @Override
     protected void onDestroy() {
         super.onDestroy();
-        worker.shutdownNow();
+        bg.shutdownNow();
+        scanBg.shutdownNow();
     }
 
-    private void loadRules() {
-        status.setText(R.string.loading_rules);
-        progress.setVisibility(View.VISIBLE);
-        worker.execute(() -> {
-            try {
-                long t0 = System.currentTimeMillis();
-                DocScanner s = DocScanner.get(this);
-                long ms = System.currentTimeMillis() - t0;
-                ui.post(() -> {
-                    scanner = s;
-                    progress.setVisibility(View.GONE);
-                    pick.setEnabled(true);
-                    status.setText(getString(R.string.rules_ready, s.yaraVersion(), ms));
-                    if (pending != null) {
-                        scan(pending);
-                        pending = null;
-                    }
-                });
-            } catch (Exception e) {
-                ui.post(() -> {
-                    progress.setVisibility(View.GONE);
-                    status.setText(getString(R.string.rules_failed, e.getMessage()));
-                });
-            }
-        });
+    @Override
+    public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, @NonNull int[] results) {
+        super.onRequestPermissionsResult(requestCode, permissions, results);
+        overview.refresh();
     }
 
-    private void scan(Uri uri) {
-        if (scanner == null) {
-            pending = uri;
-            return;
+    private void show(String tab) {
+        current = tab;
+        vOverview.setVisibility(TAB_OVERVIEW.equals(tab) ? View.VISIBLE : View.GONE);
+        vJournal.setVisibility(TAB_JOURNAL.equals(tab) ? View.VISIBLE : View.GONE);
+        vQuarantine.setVisibility(TAB_QUARANTINE.equals(tab) ? View.VISIBLE : View.GONE);
+        vScan.setVisibility(TAB_SCAN.equals(tab) ? View.VISIBLE : View.GONE);
+        switch (tab) {
+            case TAB_OVERVIEW: overview.refresh(); overview.refreshDevice(); break;
+            case TAB_JOURNAL: journal.refresh(); break;
+            case TAB_QUARANTINE: quarantine.refresh(); break;
+            default: break;
         }
-        progress.setVisibility(View.VISIBLE);
-        pick.setEnabled(false);
-        verdict.setVisibility(View.GONE);
-        findings.setText("");
-        json.setText("");
-        file.setText(uri.getLastPathSegment());
-        worker.execute(() -> {
-            long t0 = System.currentTimeMillis();
-            ScanResult r = null;
-            String err = null;
-            try {
-                r = scanner.scan(uri);
-            } catch (Exception e) {
-                err = e.getMessage();
-            }
-            long ms = System.currentTimeMillis() - t0;
-            ScanResult res = r;
-            String error = err;
-            ui.post(() -> {
-                progress.setVisibility(View.GONE);
-                pick.setEnabled(true);
-                if (res == null) {
-                    status.setText(getString(R.string.scan_failed, error));
-                } else {
-                    show(res, ms);
-                }
-            });
-        });
     }
 
-    private void show(ScanResult r, long ms) {
-        status.setText(getString(R.string.scan_time, ms));
-        file.setText(r.fileName + "  ·  " + r.fileType);
-
-        verdict.setVisibility(View.VISIBLE);
-        verdict.setText(r.verdict.name());
-        int color;
-        switch (r.verdict) {
-            case HIGH: color = Color.rgb(0xC6, 0x28, 0x28); break;
-            case MEDIUM: color = Color.rgb(0xEF, 0x6C, 0x00); break;
-            case INFO: color = Color.rgb(0x2E, 0x7D, 0x32); break;
-            default: color = Color.GRAY;
-        }
-        verdict.setBackgroundColor(color);
-
-        StringBuilder sb = new StringBuilder();
-        if (r.error != null) sb.append(r.error).append('\n');
-        for (String t : r.findingsText) sb.append("• ").append(t).append('\n');
-        if (r.findingsText.isEmpty() && !r.findings.isEmpty()) {
-            for (String f : r.findings) sb.append("• ").append(f).append('\n');
-        }
-        if (!r.vendorMatches.isEmpty()) {
-            sb.append('\n').append(getString(R.string.vendor_rules)).append('\n');
-            for (String m : r.vendorMatches) sb.append("  ").append(m).append('\n');
-        }
-        if (r.disarmNeeded) sb.append('\n').append(getString(R.string.disarm_possible));
-        if (r.timeout) sb.append('\n').append(getString(R.string.scan_timeout));
-        if (sb.length() == 0) sb.append(getString(R.string.nothing_found));
-        findings.setText(sb.toString().trim());
-
-        try {
-            json.setText(r.json != null ? r.json.toString(2) : r.rawJson());
-        } catch (Exception e) {
-            json.setText(r.rawJson());
-        }
+    private void select(String tab) {
+        int id = TAB_JOURNAL.equals(tab) ? R.id.tab_journal : TAB_QUARANTINE.equals(tab) ? R.id.tab_quarantine
+                : TAB_SCAN.equals(tab) ? R.id.tab_scan : R.id.tab_overview;
+        nav.setSelectedItemId(id);
+        show(tab);
     }
 
     @SuppressWarnings("deprecation")
-    private static Uri incomingUri(Intent intent) {
-        if (intent == null) return null;
-        if (Intent.ACTION_VIEW.equals(intent.getAction())) return intent.getData();
-        if (Intent.ACTION_SEND.equals(intent.getAction())) {
-            if (Build.VERSION.SDK_INT >= 33) return intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri.class);
-            return intent.getParcelableExtra(Intent.EXTRA_STREAM);
+    private void handleIntent(Intent intent) {
+        if (intent == null) return;
+        Uri uri = null;
+        if (Intent.ACTION_VIEW.equals(intent.getAction())) uri = intent.getData();
+        else if (Intent.ACTION_SEND.equals(intent.getAction())) {
+            uri = Build.VERSION.SDK_INT >= 33 ? intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri.class)
+                    : intent.getParcelableExtra(Intent.EXTRA_STREAM);
         }
-        return null;
+        if (uri != null) {
+            select(TAB_SCAN);
+            scan.scan(uri);
+            return;
+        }
+        String tab = intent.getStringExtra(EXTRA_TAB);
+        select(tab != null ? tab : current);
     }
 }
