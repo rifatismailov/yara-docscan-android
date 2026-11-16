@@ -40,7 +40,19 @@ public final class DocScanner {
     private IScanWorker worker;        // guarded by lock
     private boolean bound;             // guarded by lock
     private boolean initialized;       // guarded by lock: the current worker has loaded the rules
+    private long criticalStamp = -1;   // guarded by lock: the critical rules the current worker has
     private String version = "?";
+
+    /** What else a scan does besides detection. */
+    public static final class Options {
+        /** Plan the cure the policy asks for; the cured file goes to {@link #cured}. */
+        public boolean planDisarm;
+        public File cured;
+        /** Where the decompressed VBA code goes (macro store), or null. */
+        public File macro;
+        /** Where the pass-3 queue line goes, or null = no pass 3. */
+        public File critical;
+    }
 
     private final ServiceConnection connection = new ServiceConnection() {
         @Override
@@ -48,6 +60,7 @@ public final class DocScanner {
             synchronized (lock) {
                 worker = IScanWorker.Stub.asInterface(service);
                 initialized = false;   // a (re)started worker process has no rules yet
+                criticalStamp = -1;
                 lock.notifyAll();
             }
         }
@@ -87,13 +100,13 @@ public final class DocScanner {
         return version;
     }
 
-    /**
-     * Scans a local file.
-     *
-     * @param planDisarm plan the cure the policy asks for ({@link ScanResult#disarmKind})
-     * @param curedOut   where the worker writes the cured file (needed for DISARM_REPLACE), or null
-     */
-    public ScanResult scan(File file, boolean planDisarm, File curedOut) throws DocScanException {
+    /** Scans a local file (detection only). */
+    public ScanResult scan(File file) throws DocScanException {
+        return scan(file, new Options());
+    }
+
+    /** Scans a local file and, per the options, plans the cure, extracts the VBA, runs pass 3. */
+    public ScanResult scan(File file, Options o) throws DocScanException {
         String parent = file.getParent();
         ParcelFileDescriptor in;
         try {
@@ -101,21 +114,30 @@ public final class DocScanner {
         } catch (IOException e) {
             throw new DocScanException("cannot open " + file + ": " + e.getMessage(), e);
         }
-        ParcelFileDescriptor out = null;
-        if (curedOut != null) {
-            try {
-                out = ParcelFileDescriptor.open(curedOut, ParcelFileDescriptor.MODE_WRITE_ONLY
-                        | ParcelFileDescriptor.MODE_CREATE | ParcelFileDescriptor.MODE_TRUNCATE);
-            } catch (IOException e) {
-                close(in);
-                throw new DocScanException("cannot create " + curedOut + ": " + e.getMessage(), e);
-            }
+        ParcelFileDescriptor cured = null, macro = null, critical = null;
+        try {
+            if (o.planDisarm && o.cured != null) cured = openOut(o.cured);
+            if (o.macro != null) macro = openOut(o.macro);
+            if (o.critical != null) critical = openOut(o.critical);
+        } catch (IOException e) {
+            close(in);
+            close(cured);
+            close(macro);
+            throw new DocScanException("cannot create a temp file: " + e.getMessage(), e);
         }
-        return scanFd(in, file.getName(), parent == null ? "" : parent, planDisarm, out);
+        return scanFd(in, file.getName(), parent == null ? "" : parent, o.planDisarm, cured, macro, critical);
     }
 
-    public ScanResult scan(File file) throws DocScanException {
-        return scan(file, false, null);
+    private static ParcelFileDescriptor openOut(File f) throws IOException {
+        return ParcelFileDescriptor.open(f, ParcelFileDescriptor.MODE_WRITE_ONLY
+                | ParcelFileDescriptor.MODE_CREATE | ParcelFileDescriptor.MODE_TRUNCATE);
+    }
+
+    /** The critical rules changed: the worker gets them before the next scan. */
+    public void reloadCritical() {
+        synchronized (lock) {
+            criticalStamp = -1;
+        }
     }
 
     /** Scans a document behind a content:// or file:// URI (detection only). */
@@ -129,16 +151,17 @@ public final class DocScanner {
             throw new DocScanException("cannot open " + name + ": " + e.getMessage(), e);
         }
         if (in == null) throw new DocScanException("cannot open " + uri);
-        return scanFd(in, name, "", false, null);
+        return scanFd(in, name, "", false, null, null, null);
     }
 
     private ScanResult scanFd(ParcelFileDescriptor in, String name, String dir, boolean plan,
-                              ParcelFileDescriptor out) throws DocScanException {
+                              ParcelFileDescriptor out, ParcelFileDescriptor macro,
+                              ParcelFileDescriptor critical) throws DocScanException {
         try {
             IScanWorker w = ensureWorker();
             Bundle b;
             try {
-                b = w.scan(in, name, dir, plan, out);
+                b = w.scan(in, name, dir, plan, out, macro, critical);
             } catch (RemoteException e) {
                 // DeadObjectException: the parser crashed (or the watchdog killed a hung scan)
                 Log.e(TAG, "worker died while scanning " + name, e);
@@ -156,11 +179,15 @@ public final class DocScanner {
                 return ScanResult.error(name, err != null ? err : "no result");
             }
             byte[] dex = b.getByteArray("dex");
+            byte[] crit = b.getByteArray("critical");
             return ScanResult.parse(name, new String(json, StandardCharsets.UTF_8),
-                    dex == null ? null : new String(dex, StandardCharsets.UTF_8));
+                    dex == null ? null : new String(dex, StandardCharsets.UTF_8),
+                    crit == null ? null : new String(crit, StandardCharsets.UTF_8));
         } finally {
             close(in);
             close(out);
+            close(macro);
+            close(critical);
         }
     }
 
@@ -200,6 +227,17 @@ public final class DocScanner {
                 } catch (IOException | RemoteException e) {
                     worker = null;
                     throw new DocScanException("cannot initialise the scan worker: " + e.getMessage(), e);
+                }
+            }
+            long stamp = CriticalRules.stamp(app);
+            if (stamp != criticalStamp) {
+                File cr = CriticalRules.compiled(app);
+                try (ParcelFileDescriptor pfd = stamp == 0 ? null
+                        : ParcelFileDescriptor.open(cr, ParcelFileDescriptor.MODE_READ_ONLY)) {
+                    if (!worker.initCritical(pfd)) Log.w(TAG, "the worker could not load the critical rules");
+                    criticalStamp = stamp;
+                } catch (IOException | RemoteException e) {
+                    Log.w(TAG, "critical rules not loaded", e);
                 }
             }
             return worker;

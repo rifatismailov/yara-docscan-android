@@ -27,6 +27,15 @@ git submodule update --init
 - **Device security**: screen lock, patch level, encryption, third-party accessibility services /
   notification listeners / device admins, unknown sources, USB debugging, root. Turning on an accessibility
   service, notification access or device admin for a third-party app alerts at once.
+- **Macro store** (Save-Macro / Send-Macro / Sync-Macros): the decompressed VBA of every document with
+  macros -> `files/macros/<document sha256>.vba.txt` with the PC header (host, file, sha256, findings,
+  saved); optionally POSTed to the collector (`sent.txt`, hourly retry); kept 90 days / 500 MB.
+- **Pass 3 - critical information**: rules from E5Search are imported on the device (file or URL, like
+  `-Critical <file or URL>`); the text of each new document (and `.odt .ods .odp .txt .csv`) is extracted
+  and checked in the sandbox by `text.c` / `critical.c`; a match appends one JSON line (schema 2.0) to
+  `files/critical/critical.json`. The record gets only `critical {queued, fragments, rules}`, never the text.
+- **-QuarantineGeneral** (off by default, as on the PC): exe / scripts / archives with a vendor match go to
+  quarantine.
 - **Results**: `files/results/docscan-results.json` - one JSON line per file / app / device change, the
   fields of the PC watcher (`timestamp, source, host, event, category, docfile, verdict, docscan,
   yara_file_matches, disarm, summary, errors`) plus `platform`, `apk`, `android_findings`.
@@ -46,19 +55,20 @@ Huawei & co. allow DocScan autostart, otherwise the firmware drops the boot / up
 | Watcher: service, observers, queue (settle 2 s, cooldown 60 s), pipeline, verdict merging + summary (Scan-File / Get-Summary) | `watch/*` |
 | APK policy, device security | `apk/*`, `device/*` |
 | Regression tests: verdicts and cures of the 42 inert documents must match `ci/expected-verdicts.tsv` | `VerdictParityTest`, `DisarmParityTest` |
+| VBA out of the worker + upload to a collector; pass 3 with `test-critical/crit-test.yar`; Scan-File end to end | `MacroAndCriticalTest`, `PipelineTest` |
 | JVM tests: file filter, verdict merging, APK policy | `app/src/test/...` |
 | Inert test package with a banker-profile manifest (no code) - expected HIGH | `testapk/` |
 
 ```sh
 ./gradlew :app:assembleDebug                # APK
 ./gradlew :app:testDebugUnitTest            # JVM tests
-./gradlew :app:connectedDebugAndroidTest    # parity tests on a connected device
+./gradlew :app:connectedDebugAndroidTest    # device tests (note: Gradle uninstalls the app afterwards)
 ```
 
 The JSON has the same fields as `yara64 --docscan-json`, plus `disarm_plan` (what the policy would cure).
 
 ## Not yet
 
-- sending the results to the SIEM (Wazuh / collector over HTTPS), pass 3 (critical information)
+- sending the results to the SIEM (Wazuh / collector over HTTPS) and the pass-3 queue to E5Search
 - rule updates without a new APK; vendor YARA rules for Android malware (through `build_vendor_rules.py`)
 - `ARCHIVE_*` policy rules ignore APKs on the Android side only - a `not APK` condition belongs upstream

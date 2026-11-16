@@ -34,6 +34,16 @@ public final class WatchFilter {
 
     static final Set<String> APK_EXT = set(".apk");
 
+    /** Watched only with pass 3 on: text formats the docscan module has nothing to say about ($CriticalExt). */
+    static final Set<String> CRITICAL_EXT = set(".odt", ".ods", ".odp", ".txt", ".csv");
+
+    private static volatile boolean criticalOn;
+
+    /** Pass 3 on: the $CriticalExt files count as documents. */
+    public static void setCriticalOn(boolean on) {
+        criticalOn = on;
+    }
+
     /** Archives whose documents / packages the docscan module inspects (the $isZip of the PC watcher). */
     static final Set<String> ARCHIVE_EXT = set(".zip", ".apks", ".xapk", ".apkm");
 
@@ -51,7 +61,7 @@ public final class WatchFilter {
     /** "document", "general", "apk" or null when the file is not scanned. */
     public static String category(String name) {
         String ext = ext(name);
-        if (DOC_EXT.contains(ext)) return DOCUMENT;
+        if (DOC_EXT.contains(ext) || (criticalOn && CRITICAL_EXT.contains(ext))) return DOCUMENT;
         if (APK_EXT.contains(ext)) return APK;
         if (GEN_EXT.contains(ext)) return GENERAL;
         return null;

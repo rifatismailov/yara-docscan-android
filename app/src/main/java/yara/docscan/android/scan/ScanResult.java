@@ -39,11 +39,15 @@ public final class ScanResult {
     public final JSONObject json;
     /** Vendor matches in classes*.dex: {"dex":[{"part":..,"rules":[..]}],...} or null. */
     public final JSONObject dex;
+    /** Pass-3 status {"status":"queued"|"nomatch"|"skipped"|"error",...} or null when not run. */
+    public final JSONObject critical;
+    /** Size of the decompressed VBA (0 = no macros). */
+    public final long vbaSize;
 
     private ScanResult(String fileName, String fileType, Verdict verdict, List<String> findings,
                        List<String> findingsText, List<String> vendorMatches, List<String> archiveEntries,
                        boolean isApk, boolean disarmNeeded, int disarmKind, String disarmAction,
-                       boolean timeout, String error, JSONObject json, JSONObject dex) {
+                       boolean timeout, String error, JSONObject json, JSONObject dex, JSONObject critical) {
         this.fileName = fileName;
         this.fileType = fileType;
         this.verdict = verdict;
@@ -59,15 +63,21 @@ public final class ScanResult {
         this.error = error;
         this.json = json;
         this.dex = dex;
+        this.critical = critical;
+        this.vbaSize = json != null ? json.optLong("vba_size", 0) : 0;
     }
 
     public static ScanResult error(String fileName, String message) {
         return new ScanResult(fileName, "unknown", Verdict.ERROR, new ArrayList<>(), new ArrayList<>(),
                 new ArrayList<>(), new ArrayList<>(), false, false, DISARM_NOT_PLANNED, null, false,
-                message, null, null);
+                message, null, null, null);
     }
 
     public static ScanResult parse(String fileName, String json, String dexJson) {
+        return parse(fileName, json, dexJson, null);
+    }
+
+    public static ScanResult parse(String fileName, String json, String dexJson, String criticalJson) {
         JSONObject o;
         try {
             o = new JSONObject(json);
@@ -76,14 +86,8 @@ public final class ScanResult {
         }
         if (o.has("error")) return error(fileName, o.optString("error"));
 
-        JSONObject dex = null;
-        if (dexJson != null) {
-            try {
-                dex = new JSONObject(dexJson);
-            } catch (JSONException ignored) {
-                // dex scan output is optional
-            }
-        }
+        JSONObject dex = optObject(dexJson);
+        JSONObject critical = optObject(criticalJson);
 
         List<String> vendor = new ArrayList<>();
         addAll(vendor, o.optJSONArray("yara_file_matches"));
@@ -119,7 +123,17 @@ public final class ScanResult {
                 o.optBoolean("timeout"),
                 null,
                 o,
-                dex);
+                dex,
+                critical);
+    }
+
+    private static JSONObject optObject(String s) {
+        if (s == null) return null;
+        try {
+            return new JSONObject(s);
+        } catch (JSONException e) {
+            return null;
+        }
     }
 
     /** The JSON as text (for display / the results log). */

@@ -37,7 +37,10 @@ public class DisarmParityTest {
         List<Samples.Row> rows = Samples.expected();
         for (Samples.Row row : rows) {
             File f = Samples.copy(row.name, dir);
-            ScanResult r = scanner.scan(f, true, cured);
+            DocScanner.Options o = new DocScanner.Options();
+            o.planDisarm = true;
+            o.cured = cured;
+            ScanResult r = scanner.scan(f, o);
             String action = Disarm.apply(f, r, cured, q, "test");
             String after;
             if (!f.exists()) {

@@ -48,9 +48,11 @@ val copyRules by tasks.registering(CopyDocscanAssets::class) {
 val copyTestSamples by tasks.registering(CopyDocscanAssets::class) {
     val samples = File(docscanRoot, "test-samples/generated")
     val expected = File(docscanRoot, "ci/expected-verdicts.tsv")
-    sources.from(samples, expected)
+    val critical = File(docscanRoot, "test-critical/crit-test.yar")   // the test-only pass-3 rule
+    sources.from(samples, expected, critical)
     mapping.put(samples.path, "samples")
     mapping.put(expected.path, ".")
+    mapping.put(critical.path, ".")
 }
 
 androidComponents {
@@ -105,6 +107,9 @@ android {
                 "proguard-rules.pro"
             )
         }
+    }
+    testOptions {
+        unitTests.isReturnDefaultValues = true   // android.util.Log in JVM tests
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_11

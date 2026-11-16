@@ -43,6 +43,7 @@ public class IsolatedScanService extends Service {
     private static final int MAX_DEX_FILES = 32;
 
     private static long rules;
+    private static long criticalRules;
     private final ScheduledExecutorService watchdog = Executors.newSingleThreadScheduledExecutor();
 
     private final IScanWorker.Stub binder = new IScanWorker.Stub() {
@@ -60,8 +61,24 @@ public class IsolatedScanService extends Service {
         }
 
         @Override
+        public synchronized boolean initCritical(ParcelFileDescriptor rulesFd) {
+            if (criticalRules != 0) {
+                NativeYara.destroy(criticalRules);
+                criticalRules = 0;
+            }
+            if (rulesFd == null) return true;
+            try (ParcelFileDescriptor pfd = rulesFd) {
+                criticalRules = NativeYara.loadFd(pfd.getFd());
+                return criticalRules != 0;
+            } catch (IOException e) {
+                return false;
+            }
+        }
+
+        @Override
         public synchronized Bundle scan(ParcelFileDescriptor file, String name, String dir,
-                                        boolean planDisarm, ParcelFileDescriptor curedOut) {
+                                        boolean planDisarm, ParcelFileDescriptor curedOut,
+                                        ParcelFileDescriptor macroOut, ParcelFileDescriptor criticalOut) {
             Bundle out = new Bundle();
             ScheduledFuture<?> guard = watchdog.schedule(() -> {
                 Log.e(TAG, "scan of " + name + " exceeded " + WATCHDOG_SEC + " s - killing the worker");
@@ -73,8 +90,15 @@ public class IsolatedScanService extends Service {
                     return out;
                 }
                 byte[] json = NativeYara.scanFd(rules, file.getFd(), name, dir, YARA_TIMEOUT_SEC,
-                        planDisarm, curedOut != null ? curedOut.getFd() : -1);
+                        planDisarm, curedOut != null ? curedOut.getFd() : -1,
+                        macroOut != null ? macroOut.getFd() : -1);
                 out.putByteArray("json", json);
+                // pass 3 on the original, before any cure (the broker cures after this call)
+                if (criticalOut != null && criticalRules != 0) {
+                    String path = dir.isEmpty() ? name : dir + "/" + name;
+                    out.putByteArray("critical", NativeYara.critical(criticalRules, file.getFd(), name, path,
+                            0, -1, YARA_TIMEOUT_SEC, criticalOut.getFd()));
+                }
                 if (looksLikeApk(json)) {
                     byte[] dex = scanDex(file, name);
                     if (dex != null) out.putByteArray("dex", dex);
@@ -85,6 +109,8 @@ public class IsolatedScanService extends Service {
                 guard.cancel(false);
                 closeQuietly(file);
                 closeQuietly(curedOut);
+                closeQuietly(macroOut);
+                closeQuietly(criticalOut);
             }
             return out;
         }

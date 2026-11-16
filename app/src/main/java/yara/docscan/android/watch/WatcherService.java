@@ -90,6 +90,7 @@ public class WatcherService extends Service implements RecursiveObserver.Listene
         }));
 
         root = Environment.getExternalStorageDirectory();
+        WatchFilter.setCriticalOn(yara.docscan.android.scan.CriticalRules.isOn(this));
         // rules + worker first, then the watches (both can take a few seconds)
         queue.submit(() -> {
             try {

@@ -17,7 +17,9 @@
 
 #include <android/log.h>
 #include <yara.h>
+#include <yara/docscan_critical.h>
 #include <yara/docscan_disarm.h>
+#include <time.h>
 
 #define TAG "docscan-jni"
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, TAG, __VA_ARGS__)
@@ -728,7 +730,7 @@ static void plan_disarm(const uint8_t* data, size_t len, DOCSCAN_STATE* st, int 
 JNIEXPORT jbyteArray JNICALL
 Java_yara_docscan_android_scan_NativeYara_scanFd(JNIEnv* env, jclass cls, jlong h, jint fd,
                                                  jstring jname, jstring jdir, jint timeout,
-                                                 jboolean jplan, jint out_fd)
+                                                 jboolean jplan, jint out_fd, jint macro_fd)
 {
   YR_RULES* rules = (YR_RULES*) (intptr_t) h;
   if (rules == NULL) { throw_ex(env, "rules are not loaded"); return NULL; }
@@ -785,6 +787,10 @@ Java_yara_docscan_android_scan_NativeYara_scanFd(JNIEnv* env, jclass cls, jlong 
     out.s[out.len] = '\0';
     if (r == ERROR_SCAN_TIMEOUT) sb_puts(&out, ",\"timeout\":true");
     DOCSCAN_STATE* st = &args->dsc;
+    // the decompressed VBA for the macro store (--docscan-extract of the PC watcher)
+    if (macro_fd >= 0 && st->vba != NULL && st->vba_len > 0)
+      sb_printf(&out, ",\"vba_saved\":%s", write_all(macro_fd, (const unsigned char*) st->vba, st->vba_len) == 0 ? "true" : "false");
+    sb_printf(&out, ",\"vba_size\":%zu", st->vba_len);
     if (jplan && st->ds.present && (st->ds.high || st->max_severity == 2))
       plan_disarm(data, len, st, out_fd, &out);
     sb_puts(&out, "}");
@@ -827,5 +833,181 @@ Java_yara_docscan_android_scan_NativeYara_scanMem(JNIEnv* env, jclass cls, jlong
 
   strbuf out = {0};
   sb_printf(&out, "{\"rules\":[%s],\"descriptions\":[%s]}", found, desc);
+  return to_bytes(env, &out);
+}
+
+// ------------------------------------------------ critical information --
+
+typedef struct
+{
+  const char* names[64];
+  int n;
+  int size;      // from the first matched rule that has e5_chunk_size
+  int overlap;   // ... e5_chunk_overlap
+} CRITICAL_MATCHES;
+
+static int critical_callback(YR_SCAN_CONTEXT* context, int message, void* message_data, void* user_data)
+{
+  if (message == CALLBACK_MSG_RULE_MATCHING)
+  {
+    YR_RULE* rule = (YR_RULE*) message_data;
+    CRITICAL_MATCHES* m = (CRITICAL_MATCHES*) user_data;
+    if (m->n < 64) m->names[m->n++] = rule->identifier;
+    YR_META* meta;
+    yr_rule_metas_foreach(rule, meta)
+    {
+      if (meta->type != META_TYPE_INTEGER) continue;
+      if (m->size == 0 && strcmp(meta->identifier, "e5_chunk_size") == 0) m->size = (int) meta->integer;
+      if (m->overlap < 0 && strcmp(meta->identifier, "e5_chunk_overlap") == 0) m->overlap = (int) meta->integer;
+    }
+  }
+  return CALLBACK_CONTINUE;
+}
+
+static void iso_utc(time_t t, char* out, size_t osz)
+{
+  struct tm tmv;
+  if (gmtime_r(&t, &tmv) == NULL) { out[0] = '\0'; return; }
+  strftime(out, osz, "%Y-%m-%dT%H:%M:%SZ", &tmv);
+}
+
+#define CRITICAL_MAX_FILE (100u * 1024 * 1024)
+
+/*
+ * Pass 3 (critical_process of cli/yara.c) on a descriptor, in the sandboxed worker: extract the text,
+ * scan its normalised copy with the critical rules, on a match build the JSON line (schema 2.0) and
+ * write it to out_fd; the broker appends it to the queue. The document text never leaves out_fd.
+ * Returns a small status object: {"status":"queued","fragments":N,"rules":[..]} / "nomatch" / "skipped".
+ */
+JNIEXPORT jbyteArray JNICALL
+Java_yara_docscan_android_scan_NativeYara_critical(JNIEnv* env, jclass cls, jlong h, jint fd,
+                                                   jstring jname, jstring jpath, jint chunk_size,
+                                                   jint chunk_overlap, jint timeout, jint out_fd)
+{
+  YR_RULES* rules = (YR_RULES*) (intptr_t) h;
+  strbuf out = {0};
+  if (rules == NULL) { throw_ex(env, "critical rules are not loaded"); return NULL; }
+
+  char received[32];
+  iso_utc(time(NULL), received, sizeof(received));
+
+  struct stat sbuf;
+  if (fstat(fd, &sbuf) != 0) { throw_ex(env, "fstat failed"); return NULL; }
+  size_t size = (size_t) sbuf.st_size;
+  if (size == 0 || size > CRITICAL_MAX_FILE)
+  {
+    sb_puts(&out, size ? "{\"status\":\"skipped\",\"reason\":\"file larger than 100 MB\"}"
+                       : "{\"status\":\"skipped\",\"reason\":\"empty file\"}");
+    return to_bytes(env, &out);
+  }
+  void* map = mmap(NULL, size, PROT_READ, MAP_PRIVATE, fd, 0);
+  if (map == MAP_FAILED) { throw_ex(env, "mmap failed"); return NULL; }
+  const uint8_t* data = (const uint8_t*) map;
+
+  const char* name = (*env)->GetStringUTFChars(env, jname, NULL);
+  const char* path = (*env)->GetStringUTFChars(env, jpath, NULL);
+  char ext[16] = "";
+  const char* dot = strrchr(name, '.');
+  if (dot != NULL && strlen(dot + 1) < sizeof(ext))
+  {
+    size_t k = 0;
+    for (const char* c = dot + 1; *c; c++) ext[k++] = (char) ((*c >= 'A' && *c <= 'Z') ? *c + 32 : *c);
+    ext[k] = '\0';
+  }
+
+  docscan_text_t t;
+  int rc = docscan_text_extract(data, size, ext, &t);
+  if (rc != DOCSCAN_TEXT_OK)
+  {
+    sb_puts(&out, "{\"status\":\"skipped\",\"reason\":\"");
+    sb_json(&out, docscan_text_strerror(rc));
+    sb_puts(&out, "\"}");
+    goto done;
+  }
+
+  size_t nlen = 0;
+  char* norm = docscan_text_normalize(t.text, t.len, &nlen);
+  CRITICAL_MATCHES m;
+  memset(&m, 0, sizeof(m));
+  m.overlap = -1;
+  int sr = norm ? yr_rules_scan_mem(rules, (const uint8_t*) norm, nlen, SCAN_FLAGS_FAST_MODE,
+                                    critical_callback, &m, timeout)
+                : ERROR_INSUFFICIENT_MEMORY;
+  free(norm);
+  if (sr != ERROR_SUCCESS)
+  {
+    sb_printf(&out, "{\"status\":\"error\",\"reason\":\"scan error %d\"}", sr);
+    docscan_text_free(&t);
+    goto done;
+  }
+  if (m.n == 0)
+  {
+    sb_puts(&out, "{\"status\":\"nomatch\"}");
+    docscan_text_free(&t);
+    goto done;
+  }
+
+  // chunking: rule meta, then the setting, then 700/120
+  int csize = m.size > 0 ? m.size : (chunk_size > 0 ? chunk_size : 700);
+  int cover = m.overlap >= 0 ? m.overlap : (chunk_overlap >= 0 ? chunk_overlap : 120);
+  if (csize < 200 || csize > 1500 || cover < 0 || cover > csize / 2)
+  {
+    sb_printf(&out, "{\"status\":\"error\",\"reason\":\"invalid chunk size/overlap %d,%d\"}", csize, cover);
+    docscan_text_free(&t);
+    goto done;
+  }
+
+  char sha[65];
+  docscan_sha256_hex(data, size, sha);
+  char fs_modified[32] = "";
+  if (!t.modified_at[0]) iso_utc(sbuf.st_mtime, fs_modified, sizeof(fs_modified));
+
+  docscan_critical_doc d;
+  memset(&d, 0, sizeof(d));
+  d.name = name;
+  d.path = path;
+  d.format = ext[0] ? ext : t.kind;
+  d.size_bytes = size;
+  d.sha256 = sha;
+  d.author = t.author;
+  d.last_modified_by = t.last_modified_by;
+  d.title = t.title;
+  d.created_at = t.created_at;
+  d.modified_at = t.modified_at[0] ? t.modified_at : fs_modified;
+  d.received_at = received;
+  d.matches = m.names;
+  d.n_matches = m.n;
+  d.chunk_size = csize;
+  d.chunk_overlap = cover;
+
+  size_t jl = 0;
+  int nfrag = 0;
+  char* json = docscan_critical_json(t.text, t.len, &d, &jl, &nfrag);
+  docscan_text_free(&t);
+  if (json == NULL)
+  {
+    sb_puts(&out, "{\"status\":\"error\",\"reason\":\"could not build the JSON\"}");
+    goto done;
+  }
+  int written = out_fd >= 0 && write_all(out_fd, (const unsigned char*) json, jl) == 0;
+  free(json);
+  if (!written)
+  {
+    sb_puts(&out, "{\"status\":\"error\",\"reason\":\"could not write the queue line\"}");
+    goto done;
+  }
+  sb_printf(&out, "{\"status\":\"queued\",\"fragments\":%d,\"rules\":[", nfrag);
+  for (int i = 0; i < m.n; i++)
+  {
+    sb_puts(&out, i ? ",\"" : "\"");
+    sb_json(&out, m.names[i]);
+    sb_puts(&out, "\"");
+  }
+  sb_puts(&out, "]}");
+
+done:
+  (*env)->ReleaseStringUTFChars(env, jname, name);
+  (*env)->ReleaseStringUTFChars(env, jpath, path);
+  munmap(map, size);
   return to_bytes(env, &out);
 }

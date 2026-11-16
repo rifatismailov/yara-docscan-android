@@ -11,12 +11,19 @@ interface IScanWorker {
     /** Loads compiled rules (.yarc) from the descriptor. Returns the YARA version, or null on failure. */
     String init(in ParcelFileDescriptor rules);
 
+    /** Loads the compiled critical-information rules (pass 3); null = turn pass 3 off. */
+    boolean initCritical(in ParcelFileDescriptor rules);
+
     /**
      * Scans the file. Result bundle: "json" (byte[] UTF-8 docscan JSON), "dex" (byte[] JSON of vendor
-     * matches in classes*.dex when the file is an APK), "error" (String) on failure.
+     * matches in classes*.dex when the file is an APK), "critical" (byte[] pass-3 status JSON),
+     * "error" (String) on failure.
      *
      * planDisarm: plan the cure the policy asks for; the cured file is written to curedOut (may be null).
+     * macroOut: the decompressed VBA code is written there (may be null).
+     * criticalOut: run pass 3 (needs initCritical); the queue line is written there (may be null).
      */
     Bundle scan(in ParcelFileDescriptor file, String name, String dir, boolean planDisarm,
-                in ParcelFileDescriptor curedOut);
+                in ParcelFileDescriptor curedOut, in ParcelFileDescriptor macroOut,
+                in ParcelFileDescriptor criticalOut);
 }

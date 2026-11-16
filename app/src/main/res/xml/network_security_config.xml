@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The macro collector of the PC deployment listens on plain HTTP inside the corporate network
+     (http://<server>:8080). Cleartext is allowed for that; HTTPS works as usual. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

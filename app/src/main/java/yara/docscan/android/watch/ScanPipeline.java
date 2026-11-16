@@ -28,6 +28,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import yara.docscan.android.apk.ApkFacts;
 import yara.docscan.android.apk.ApkFactsReader;
 import yara.docscan.android.apk.ApkInspector;
+import yara.docscan.android.scan.CriticalRules;
 import yara.docscan.android.scan.Disarm;
 import yara.docscan.android.scan.DocScanException;
 import yara.docscan.android.scan.DocScanner;
@@ -53,6 +54,8 @@ public final class ScanPipeline {
     private final FileIndex index;
     private final ResultLog log;
     private final Quarantine quarantine;
+    private final MacroStore macros;
+    private final CriticalQueue criticalQueue;
     private final String host;
     private final AtomicInteger seq = new AtomicInteger();
     private volatile Listener listener;
@@ -69,6 +72,8 @@ public final class ScanPipeline {
         this.index = FileIndex.get(ctx);
         this.log = ResultLog.get(ctx);
         this.quarantine = new Quarantine(ctx);
+        this.macros = new MacroStore(ctx);
+        this.criticalQueue = CriticalQueue.get(ctx);
         this.host = hostName(ctx);
     }
 
@@ -124,15 +129,57 @@ public final class ScanPipeline {
             boolean archiveExt = WatchFilter.isArchiveExt(f.getName());
             boolean doc = WatchFilter.DOCUMENT.equals(cat);
             boolean planCure = settings.cure() && (doc || archiveExt);
-            File cured = planCure ? new File(ctx.getCacheDir(), "cured-" + seq.incrementAndGet() + ".tmp") : null;
+            int n = seq.incrementAndGet();
+            DocScanner.Options o = new DocScanner.Options();
+            o.planDisarm = planCure;
+            o.cured = planCure ? new File(ctx.getCacheDir(), "cured-" + n + ".tmp") : null;
+            // the macro store and pass 3: documents (a .zip too for the macro, as on the PC)
+            o.macro = doc || archiveExt ? new File(ctx.getCacheDir(), "macro-" + n + ".tmp") : null;
+            boolean critical = doc && CriticalRules.isOn(ctx) && criticalQueue.isNew(sha);
+            o.critical = critical ? new File(ctx.getCacheDir(), "critical-" + n + ".tmp") : null;
+            File cured = o.cured;
 
             ScanResult r;
             try {
-                r = DocScanner.get(ctx).scan(f, planCure, cured);
+                r = DocScanner.get(ctx).scan(f, o);
             } catch (DocScanException e) {
                 r = ScanResult.error(f.getName(), e.getMessage());
             }
             if (r.error != null) errors.add(r.error);
+
+            // pass 3: the worker wrote the queue line; append it (never the text into the record)
+            if (r.critical != null) {
+                String st = r.critical.optString("status");
+                if ("queued".equals(st)) {
+                    if (criticalQueue.append(sha, o.critical)) {
+                        JSONObject c = new JSONObject();
+                        put(c, "queued", true);
+                        put(c, "fragments", r.critical.optInt("fragments"));
+                        put(c, "rules", r.critical.optJSONArray("rules"));
+                        put(rec, "critical", c);
+                    } else {
+                        errors.add("docscan-critical: could not write the queue file - not queued");
+                    }
+                } else if ("error".equals(st)) {
+                    errors.add("docscan-critical: " + r.critical.optString("reason"));
+                }
+            }
+            if (o.critical != null) o.critical.delete();
+
+            // macro store: a document with macros (the code as the worker extracted it)
+            if (o.macro != null) {
+                if (doc && r.vbaSize > 0) {
+                    File mf = macros.save(sha, o.macro, host, f.getPath(), r.findings);
+                    if (mf != null) {
+                        JSONObject mc = new JSONObject();
+                        put(mc, "file", mf.getPath());
+                        put(mc, "size", r.vbaSize);
+                        put(mc, "uploaded", macros.send(mf, settings.macroUploadUrl()));
+                        put(rec, "macro", mc);
+                    }
+                }
+                o.macro.delete();
+            }
 
             ApkInspector.Report apk = null;
             ApkFacts facts = null;
@@ -149,6 +196,10 @@ public final class ScanPipeline {
                 if (s != null) s.suppress(f.getPath());
                 disarm = Disarm.apply(f, r, cured, quarantine, pre);
             } else if (m.apk && "HIGH".equals(verdict) && settings.cure() && settings.quarantineApk()) {
+                disarm = Disarm.quarantine(f, quarantine, verdict, pre);
+            } else if (!m.apk && WatchFilter.GENERAL.equals(cat) && !m.yaraFileMatches.isEmpty()
+                    && settings.cure() && settings.quarantineGeneral()) {
+                // -QuarantineGeneral: a general file matching vendor rules (copy -> quarantine, original deleted)
                 disarm = Disarm.quarantine(f, quarantine, verdict, pre);
             }
             if (cured != null) cured.delete();

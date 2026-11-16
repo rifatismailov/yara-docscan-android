@@ -40,6 +40,32 @@ public final class WatchSettings {
         p.edit().putBoolean("quarantine_apk", v).apply();
     }
 
+    /** -QuarantineGeneral: general files (exe / scripts / archives) matching vendor rules -> quarantine. */
+    public boolean quarantineGeneral() {
+        return p.getBoolean("quarantine_general", false);
+    }
+
+    public void setQuarantineGeneral(boolean v) {
+        p.edit().putBoolean("quarantine_general", v).apply();
+    }
+
+    /** -MacroUpload: the collector the macro store is also sent to ("" = keep it local). */
+    public String macroUploadUrl() {
+        return p.getString("macro_upload", "");
+    }
+
+    public void setMacroUploadUrl(String v) {
+        p.edit().putString("macro_upload", v == null ? "" : v.trim()).apply();
+    }
+
+    public long lastMacroSync() {
+        return p.getLong("last_macro_sync", 0);
+    }
+
+    public void setLastMacroSync(long t) {
+        p.edit().putLong("last_macro_sync", t).apply();
+    }
+
     /** -MaxSizeMB: larger files are skipped (logged). */
     public int maxSizeMb() {
         return p.getInt("max_size_mb", 100);

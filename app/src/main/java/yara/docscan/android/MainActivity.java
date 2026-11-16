@@ -52,6 +52,11 @@ public class MainActivity extends AppCompatActivity {
                 if (uri != null) scan.scan(uri);
             });
 
+    private final ActivityResultLauncher<String[]> criticalPicker =
+            registerForActivityResult(new ActivityResultContracts.OpenDocument(), uri -> {
+                if (uri != null) overview.installCritical(uri);
+            });
+
     private final Runnable ticker = new Runnable() {
         @Override
         public void run() {
@@ -71,7 +76,7 @@ public class MainActivity extends AppCompatActivity {
         vQuarantine = findViewById(R.id.view_quarantine);
         vScan = findViewById(R.id.view_scan);
 
-        overview = new OverviewTab(this, vOverview, bg);
+        overview = new OverviewTab(this, vOverview, bg, () -> criticalPicker.launch(new String[] {"*/*"}));
         journal = new JournalTab(this, vJournal, bg);
         quarantine = new QuarantineTab(this, vQuarantine, bg);
         scan = new ScanTab(this, vScan, scanBg, () -> picker.launch(new String[] {"*/*"}));

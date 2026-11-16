@@ -1,18 +1,29 @@
 package yara.docscan.android.ui;
 
 import android.app.Activity;
+import android.net.Uri;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.Button;
 import android.widget.CompoundButton;
+import android.widget.EditText;
+import android.widget.FrameLayout;
 import android.widget.TextView;
 
+import androidx.appcompat.app.AlertDialog;
+
+import java.io.IOException;
+import java.io.InputStream;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
 
 import yara.docscan.android.R;
 import yara.docscan.android.device.DevicePosture;
+import yara.docscan.android.scan.CriticalRules;
+import yara.docscan.android.watch.CriticalQueue;
 import yara.docscan.android.watch.FileIndex;
+import yara.docscan.android.watch.MacroStore;
+import yara.docscan.android.watch.WatchFilter;
 import yara.docscan.android.watch.ResultLog;
 import yara.docscan.android.watch.WatchSettings;
 import yara.docscan.android.watch.WatcherService;
@@ -25,9 +36,10 @@ public final class OverviewTab {
     private final TextView title, text, stats;
     private final Button toggle;
     private final ViewGroup permissions, deviceChecks;
-    private final CompoundButton cure, quarantineApk;
+    private final CompoundButton cure, quarantineApk, quarantineGeneral;
+    private final TextView macroStatus, criticalStatus;
 
-    public OverviewTab(Activity a, View root, ExecutorService bg) {
+    public OverviewTab(Activity a, View root, ExecutorService bg, Runnable pickCriticalRules) {
         this.a = a;
         this.bg = bg;
         this.settings = new WatchSettings(a);
@@ -39,6 +51,9 @@ public final class OverviewTab {
         deviceChecks = root.findViewById(R.id.device_checks);
         cure = root.findViewById(R.id.setting_cure);
         quarantineApk = root.findViewById(R.id.setting_quarantine_apk);
+        quarantineGeneral = root.findViewById(R.id.setting_quarantine_general);
+        macroStatus = root.findViewById(R.id.macro_status);
+        criticalStatus = root.findViewById(R.id.critical_status);
         ((TextView) root.findViewById(R.id.results_file))
                 .setText(a.getString(R.string.results_file, ResultLog.get(a).file().getPath()));
 
@@ -52,10 +67,30 @@ public final class OverviewTab {
         cure.setOnCheckedChangeListener((b, on) -> {
             settings.setCure(on);
             quarantineApk.setEnabled(on);
+            quarantineGeneral.setEnabled(on);
         });
         quarantineApk.setChecked(settings.quarantineApk());
         quarantineApk.setEnabled(settings.cure());
         quarantineApk.setOnCheckedChangeListener((b, on) -> settings.setQuarantineApk(on));
+        quarantineGeneral.setChecked(settings.quarantineGeneral());
+        quarantineGeneral.setEnabled(settings.cure());
+        quarantineGeneral.setOnCheckedChangeListener((b, on) -> settings.setQuarantineGeneral(on));
+
+        root.findViewById(R.id.macro_url).setOnClickListener(v ->
+                askText(R.string.macro_set_url, R.string.macro_url_hint, settings.macroUploadUrl(), url -> {
+                    settings.setMacroUploadUrl(url);
+                    refreshStores();
+                    if (!url.isEmpty()) bg.execute(() -> new MacroStore(a).sync(url));   // send what is stored
+                }));
+        root.findViewById(R.id.critical_file).setOnClickListener(v -> pickCriticalRules.run());
+        root.findViewById(R.id.critical_url).setOnClickListener(v ->
+                askText(R.string.critical_from_url, R.string.critical_url_hint, CriticalRules.origin(a),
+                        url -> installCritical(() -> CriticalRules.installFromUrl(a, url))));
+        root.findViewById(R.id.critical_off).setOnClickListener(v -> {
+            CriticalRules.remove(a);
+            WatchFilter.setCriticalOn(false);
+            refreshStores();
+        });
         root.findViewById(R.id.device_recheck).setOnClickListener(v -> refreshDevice());
         refreshDevice();
     }
@@ -76,6 +111,63 @@ public final class OverviewTab {
             a.runOnUiThread(() -> stats.setText(s));
         });
         refreshPermissions();
+        refreshStores();
+    }
+
+    private void refreshStores() {
+        String url = settings.macroUploadUrl();
+        macroStatus.setText(a.getString(R.string.macro_status, new MacroStore(a).count(),
+                url.isEmpty() ? a.getString(R.string.macro_local) : a.getString(R.string.macro_upload, url)));
+        criticalStatus.setText(CriticalRules.isOn(a)
+                ? a.getString(R.string.critical_status_on, CriticalRules.origin(a), CriticalQueue.get(a).file().getPath())
+                : a.getString(R.string.critical_status_off));
+    }
+
+    interface Install {
+        void run() throws Exception;
+    }
+
+    /** Compile / download the critical rules off the UI thread, then report. */
+    void installCritical(Install job) {
+        bg.execute(() -> {
+            String msg;
+            try {
+                job.run();
+                WatchFilter.setCriticalOn(true);
+                msg = a.getString(R.string.critical_installed);
+            } catch (Exception e) {
+                msg = a.getString(R.string.critical_failed, e.getMessage());
+            }
+            String m = msg;
+            a.runOnUiThread(() -> {
+                new AlertDialog.Builder(a).setMessage(m).setPositiveButton(R.string.ok, null).show();
+                refreshStores();
+            });
+        });
+    }
+
+    public void installCritical(Uri uri) {
+        installCritical(() -> {
+            try (InputStream in = a.getContentResolver().openInputStream(uri)) {
+                if (in == null) throw new IOException("cannot open " + uri);
+                CriticalRules.install(a, in, String.valueOf(uri.getLastPathSegment()));
+            }
+        });
+    }
+
+    private void askText(int title, int hint, String value, java.util.function.Consumer<String> done) {
+        EditText e = new EditText(a);
+        e.setHint(hint);
+        e.setText(value);
+        e.setSingleLine(true);
+        int pad = (int) (20 * a.getResources().getDisplayMetrics().density);
+        FrameLayout box = new FrameLayout(a);
+        box.setPadding(pad, pad / 2, pad, 0);
+        box.addView(e);
+        new AlertDialog.Builder(a).setTitle(title).setView(box)
+                .setNegativeButton(R.string.cancel, null)
+                .setPositiveButton(R.string.ok, (d, w) -> done.accept(e.getText().toString().trim()))
+                .show();
     }
 
     private void refreshPermissions() {

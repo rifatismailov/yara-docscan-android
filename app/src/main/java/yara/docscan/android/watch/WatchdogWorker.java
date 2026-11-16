@@ -35,6 +35,11 @@ public class WatchdogWorker extends Worker {
         Context ctx = getApplicationContext();
         WatchSettings s = new WatchSettings(ctx);
         if (!s.enabled()) return Result.success();
+        // Sync-Macros: retention + upload retry, once an hour
+        if (System.currentTimeMillis() - s.lastMacroSync() > 3600_000L) {
+            s.setLastMacroSync(System.currentTimeMillis());
+            new MacroStore(ctx).sync(s.macroUploadUrl());
+        }
         boolean due = System.currentTimeMillis() - s.lastCatchUp() > WatcherService.CATCH_UP_EVERY_MS;
         if (!WatcherService.running || due) {
             Intent i = new Intent(ctx, WatcherService.class);
