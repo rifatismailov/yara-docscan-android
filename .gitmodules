@@ -1,0 +1,3 @@
+[submodule "yara-docscan"]
+	path = yara-docscan
+	url = https://github.com/rifatismailov/yara-docscan.git

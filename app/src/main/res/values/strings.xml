@@ -1,0 +1,14 @@
+<resources>
+    <string name="app_name">DocScan</string>
+    <string name="pick_document">Обрати документ</string>
+    <string name="loading_rules">Завантаження правил… (перший запуск: компіляція, до хвилини)</string>
+    <string name="rules_ready">YARA %1$s · правила готові за %2$d мс</string>
+    <string name="rules_failed">Помилка правил: %1$s</string>
+    <string name="scan_failed">Помилка сканування: %1$s</string>
+    <string name="scan_time">Перевірено за %1$d мс</string>
+    <string name="vendor_rules">Vendor-правила:</string>
+    <string name="disarm_possible">Документ можна знешкодити (буде в наступній версії).</string>
+    <string name="scan_timeout">Сканування перервано за таймаутом, результат може бути неповним.</string>
+    <string name="nothing_found">Загроз не знайдено.</string>
+    <string name="scan_with_docscan">Перевірити в DocScan</string>
+</resources>
