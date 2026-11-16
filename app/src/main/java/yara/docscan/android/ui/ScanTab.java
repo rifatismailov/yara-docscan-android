@@ -58,7 +58,7 @@ public final class ScanTab {
             } catch (Exception e) {
                 a.runOnUiThread(() -> {
                     progress.setVisibility(View.GONE);
-                    status.setText(a.getString(R.string.rules_failed, e.getMessage()));
+                    status.setText(a.getString(R.string.rules_load_failed, e.getMessage()));
                 });
             }
         });

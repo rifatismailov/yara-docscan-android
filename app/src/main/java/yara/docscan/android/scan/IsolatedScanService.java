@@ -44,6 +44,7 @@ public class IsolatedScanService extends Service {
 
     private static long rules;
     private static long criticalRules;
+    private static int chunkSize, chunkOverlap = -1;
     private final ScheduledExecutorService watchdog = Executors.newSingleThreadScheduledExecutor();
 
     private final IScanWorker.Stub binder = new IScanWorker.Stub() {
@@ -61,7 +62,9 @@ public class IsolatedScanService extends Service {
         }
 
         @Override
-        public synchronized boolean initCritical(ParcelFileDescriptor rulesFd) {
+        public synchronized boolean initCritical(ParcelFileDescriptor rulesFd, int size, int overlap) {
+            chunkSize = size;
+            chunkOverlap = overlap;
             if (criticalRules != 0) {
                 NativeYara.destroy(criticalRules);
                 criticalRules = 0;
@@ -97,7 +100,7 @@ public class IsolatedScanService extends Service {
                 if (criticalOut != null && criticalRules != 0) {
                     String path = dir.isEmpty() ? name : dir + "/" + name;
                     out.putByteArray("critical", NativeYara.critical(criticalRules, file.getFd(), name, path,
-                            0, -1, YARA_TIMEOUT_SEC, criticalOut.getFd()));
+                            chunkSize, chunkOverlap, YARA_TIMEOUT_SEC, criticalOut.getFd()));
                 }
                 if (looksLikeApk(json)) {
                     byte[] dex = scanDex(file, name);

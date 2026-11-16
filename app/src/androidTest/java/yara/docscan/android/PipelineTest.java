@@ -21,7 +21,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.List;
 
-import yara.docscan.android.scan.CriticalRules;
+import yara.docscan.android.scan.RulesBundle;
 import yara.docscan.android.scan.DocScanner;
 import yara.docscan.android.watch.CriticalQueue;
 import yara.docscan.android.watch.ResultLog;
@@ -33,26 +33,27 @@ import yara.docscan.android.watch.WatchSettings;
 @RunWith(AndroidJUnit4.class)
 public class PipelineTest {
     private WatchSettings settings;
-    private boolean cure, qGeneral;
+    private boolean cure, qGeneral, critical;
 
     @Before
     public void setUp() throws Exception {
         settings = new WatchSettings(Samples.app());
         cure = settings.cure();
         qGeneral = settings.quarantineGeneral();
+        critical = settings.criticalEnabled();
+        settings.setCriticalEnabled(true);
         settings.setCure(true);
         settings.setQuarantineGeneral(true);
-        CriticalRules.install(Samples.app(),
-                InstrumentationRegistry.getInstrumentation().getContext().getAssets().open("crit-test.yar"), "crit-test.yar");
-        WatchFilter.setCriticalOn(true);
+        Samples.installCriticalBundle("crit-test.yar");
     }
 
     @After
     public void tearDown() {
         settings.setCure(cure);
         settings.setQuarantineGeneral(qGeneral);
-        CriticalRules.remove(Samples.app());
-        WatchFilter.setCriticalOn(false);
+        settings.setCriticalEnabled(critical);
+        RulesBundle.remove(Samples.app());
+        WatchFilter.criticalActive(Samples.app());
     }
 
     /** The last record of the results log for this path. */
@@ -96,6 +97,17 @@ public class PipelineTest {
         assertEquals("crit_test_grif", crit.getJSONArray("rules").getString(0));
         assertTrue(CriticalQueue.get(Samples.app()).file().length() > before);
         assertFalse("the text must not go into the record", record(txt).toString().contains("службового"));
+
+        // the switch off: pass 3 does not run although the rules are there
+        settings.setCriticalEnabled(false);
+        File txt2 = new File(dir, "memo2.txt");
+        try (OutputStream o2 = new FileOutputStream(txt2)) {
+            o2.write("Для службового користування, друга копія.".getBytes(StandardCharsets.UTF_8));
+        }
+        WatchFilter.setCriticalOn(true);   // keep .txt watched for this check
+        p.scanFile(txt2, "Created", true);
+        assertFalse(record(txt2).has("critical"));
+        settings.setCriticalEnabled(true);
 
         // 3. -QuarantineGeneral: a script that vendor rules match (the macro code saved as .vbs)
         File vbs = new File(dir, "dropper.vbs");

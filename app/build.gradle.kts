@@ -53,6 +53,17 @@ val copyTestSamples by tasks.registering(CopyDocscanAssets::class) {
     mapping.put(samples.path, "samples")
     mapping.put(expected.path, ".")
     mapping.put(critical.path, ".")
+    // optional pass-3 corpus (CriticalCorpusTest), never committed:
+    //   -PcriticalCorpus=<docs dir> -PcriticalRules=<rules.yar> -PcriticalExpected=<tools/critical_reference.py output>
+    val corpus = providers.gradleProperty("criticalCorpus").orNull
+    val corpusRules = providers.gradleProperty("criticalRules").orNull
+    val corpusExpected = providers.gradleProperty("criticalExpected").orNull
+    if (corpus != null && corpusRules != null && corpusExpected != null) {
+        sources.from(corpus, corpusRules, corpusExpected)
+        mapping.put(File(corpus).path, "critical-corpus/docs")
+        mapping.put(File(corpusRules).path, "critical-corpus")
+        mapping.put(File(corpusExpected).path, "critical-corpus")
+    }
 }
 
 androidComponents {

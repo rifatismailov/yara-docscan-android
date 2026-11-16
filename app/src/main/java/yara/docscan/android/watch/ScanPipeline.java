@@ -28,7 +28,6 @@ import java.util.concurrent.atomic.AtomicInteger;
 import yara.docscan.android.apk.ApkFacts;
 import yara.docscan.android.apk.ApkFactsReader;
 import yara.docscan.android.apk.ApkInspector;
-import yara.docscan.android.scan.CriticalRules;
 import yara.docscan.android.scan.Disarm;
 import yara.docscan.android.scan.DocScanException;
 import yara.docscan.android.scan.DocScanner;
@@ -135,7 +134,7 @@ public final class ScanPipeline {
             o.cured = planCure ? new File(ctx.getCacheDir(), "cured-" + n + ".tmp") : null;
             // the macro store and pass 3: documents (a .zip too for the macro, as on the PC)
             o.macro = doc || archiveExt ? new File(ctx.getCacheDir(), "macro-" + n + ".tmp") : null;
-            boolean critical = doc && CriticalRules.isOn(ctx) && criticalQueue.isNew(sha);
+            boolean critical = doc && WatchFilter.criticalActive(ctx) && criticalQueue.isNew(sha);
             o.critical = critical ? new File(ctx.getCacheDir(), "critical-" + n + ".tmp") : null;
             File cured = o.cured;
 

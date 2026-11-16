@@ -52,9 +52,9 @@ public class MainActivity extends AppCompatActivity {
                 if (uri != null) scan.scan(uri);
             });
 
-    private final ActivityResultLauncher<String[]> criticalPicker =
+    private final ActivityResultLauncher<String[]> rulesPicker =
             registerForActivityResult(new ActivityResultContracts.OpenDocument(), uri -> {
-                if (uri != null) overview.installCritical(uri);
+                if (uri != null) overview.installRules(uri);
             });
 
     private final Runnable ticker = new Runnable() {
@@ -76,7 +76,7 @@ public class MainActivity extends AppCompatActivity {
         vQuarantine = findViewById(R.id.view_quarantine);
         vScan = findViewById(R.id.view_scan);
 
-        overview = new OverviewTab(this, vOverview, bg, () -> criticalPicker.launch(new String[] {"*/*"}));
+        overview = new OverviewTab(this, vOverview, bg, () -> rulesPicker.launch(new String[] {"application/zip", "application/octet-stream", "*/*"}));
         journal = new JournalTab(this, vJournal, bg);
         quarantine = new QuarantineTab(this, vQuarantine, bg);
         scan = new ScanTab(this, vScan, scanBg, () -> picker.launch(new String[] {"*/*"}));

@@ -52,6 +52,43 @@ final class Samples {
         return rows;
     }
 
+    /** Installs a rules set with the given critical_information rule (an asset of the test APK). */
+    static void installCriticalBundle(String asset) throws Exception {
+        AssetManager am = InstrumentationRegistry.getInstrumentation().getContext().getAssets();
+        java.io.ByteArrayOutputStream rule = new java.io.ByteArrayOutputStream();
+        try (InputStream in = am.open(asset)) {
+            byte[] buf = new byte[65536];
+            int n;
+            while ((n = in.read(buf)) > 0) rule.write(buf, 0, n);
+        }
+        String name = asset.substring(asset.lastIndexOf('/') + 1);
+        java.io.ByteArrayOutputStream zip = new java.io.ByteArrayOutputStream();
+        try (java.util.zip.ZipOutputStream z = new java.util.zip.ZipOutputStream(zip)) {
+            z.putNextEntry(new java.util.zip.ZipEntry("manifest.json"));
+            z.write(("{\"bundle\":\"docscan-rules\",\"version\":\"test-" + name + "\","
+                    + "\"critical_information\":\"critical/" + name + "\"}").getBytes(StandardCharsets.UTF_8));
+            z.closeEntry();
+            z.putNextEntry(new java.util.zip.ZipEntry("critical/" + name));
+            z.write(rule.toByteArray());
+            z.closeEntry();
+        }
+        yara.docscan.android.scan.RulesBundle.install(app(), new java.io.ByteArrayInputStream(zip.toByteArray()),
+                "test:" + name, null);
+    }
+
+    /** Copies an asset of the test APK to a file. */
+    static File copyAsset(String asset, File f) throws IOException {
+        AssetManager am = InstrumentationRegistry.getInstrumentation().getContext().getAssets();
+        File parent = f.getParentFile();
+        if (parent != null && !parent.isDirectory() && !parent.mkdirs()) throw new IOException("mkdir " + parent);
+        try (InputStream in = am.open(asset); OutputStream out = new FileOutputStream(f)) {
+            byte[] buf = new byte[65536];
+            int n;
+            while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+        }
+        return f;
+    }
+
     /** A fresh copy of the sample in dir. */
     static File copy(String name, File dir) throws IOException {
         AssetManager am = InstrumentationRegistry.getInstrumentation().getContext().getAssets();

@@ -66,6 +66,32 @@ public final class WatchSettings {
         p.edit().putLong("last_macro_sync", t).apply();
     }
 
+    /** Pass 3 (critical information) on: needs critical_information rules in the installed rules set. */
+    public boolean criticalEnabled() {
+        return p.getBoolean("critical_enabled", false);
+    }
+
+    public void setCriticalEnabled(boolean v) {
+        p.edit().putBoolean("critical_enabled", v).apply();
+    }
+
+    /** Where rules updates come from (a ZIP with manifest.json); "" = updates only from a file. */
+    public String rulesUrl() {
+        return p.getString("rules_url", "");
+    }
+
+    public void setRulesUrl(String v) {
+        p.edit().putString("rules_url", v == null ? "" : v.trim()).apply();
+    }
+
+    public long lastRulesCheck() {
+        return p.getLong("last_rules_check", 0);
+    }
+
+    public void setLastRulesCheck(long t) {
+        p.edit().putLong("last_rules_check", t).apply();
+    }
+
     /** -MaxSizeMB: larger files are skipped (logged). */
     public int maxSizeMb() {
         return p.getInt("max_size_mb", 100);

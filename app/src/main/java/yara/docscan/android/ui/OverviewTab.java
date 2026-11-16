@@ -2,6 +2,7 @@ package yara.docscan.android.ui;
 
 import android.app.Activity;
 import android.net.Uri;
+import android.text.format.DateUtils;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.Button;
@@ -19,7 +20,7 @@ import java.util.concurrent.ExecutorService;
 
 import yara.docscan.android.R;
 import yara.docscan.android.device.DevicePosture;
-import yara.docscan.android.scan.CriticalRules;
+import yara.docscan.android.scan.RulesBundle;
 import yara.docscan.android.watch.CriticalQueue;
 import yara.docscan.android.watch.FileIndex;
 import yara.docscan.android.watch.MacroStore;
@@ -37,9 +38,10 @@ public final class OverviewTab {
     private final Button toggle;
     private final ViewGroup permissions, deviceChecks;
     private final CompoundButton cure, quarantineApk, quarantineGeneral;
-    private final TextView macroStatus, criticalStatus;
+    private final TextView macroStatus, criticalStatus, rulesStatus;
+    private final CompoundButton criticalSwitch;
 
-    public OverviewTab(Activity a, View root, ExecutorService bg, Runnable pickCriticalRules) {
+    public OverviewTab(Activity a, View root, ExecutorService bg, Runnable pickRulesBundle) {
         this.a = a;
         this.bg = bg;
         this.settings = new WatchSettings(a);
@@ -54,6 +56,8 @@ public final class OverviewTab {
         quarantineGeneral = root.findViewById(R.id.setting_quarantine_general);
         macroStatus = root.findViewById(R.id.macro_status);
         criticalStatus = root.findViewById(R.id.critical_status);
+        rulesStatus = root.findViewById(R.id.rules_status);
+        criticalSwitch = root.findViewById(R.id.critical_switch);
         ((TextView) root.findViewById(R.id.results_file))
                 .setText(a.getString(R.string.results_file, ResultLog.get(a).file().getPath()));
 
@@ -82,13 +86,24 @@ public final class OverviewTab {
                     refreshStores();
                     if (!url.isEmpty()) bg.execute(() -> new MacroStore(a).sync(url));   // send what is stored
                 }));
-        root.findViewById(R.id.critical_file).setOnClickListener(v -> pickCriticalRules.run());
-        root.findViewById(R.id.critical_url).setOnClickListener(v ->
-                askText(R.string.critical_from_url, R.string.critical_url_hint, CriticalRules.origin(a),
-                        url -> installCritical(() -> CriticalRules.installFromUrl(a, url))));
-        root.findViewById(R.id.critical_off).setOnClickListener(v -> {
-            CriticalRules.remove(a);
-            WatchFilter.setCriticalOn(false);
+        root.findViewById(R.id.rules_file).setOnClickListener(v -> pickRulesBundle.run());
+        root.findViewById(R.id.rules_url).setOnClickListener(v ->
+                askText(R.string.rules_from_url, R.string.rules_url_hint, settings.rulesUrl(), url -> {
+                    settings.setRulesUrl(url);
+                    if (!url.isEmpty()) installRules(() -> RulesBundle.installFromUrl(a, url, false));
+                }));
+        root.findViewById(R.id.rules_check).setOnClickListener(v -> {
+            String url = settings.rulesUrl();
+            if (url.isEmpty()) {
+                new AlertDialog.Builder(a).setMessage(R.string.rules_no_url).setPositiveButton(R.string.ok, null).show();
+            } else {
+                installRules(() -> RulesBundle.installFromUrl(a, url, true));
+            }
+        });
+        criticalSwitch.setChecked(settings.criticalEnabled());
+        criticalSwitch.setOnCheckedChangeListener((b, on) -> {
+            settings.setCriticalEnabled(on);
+            WatchFilter.criticalActive(a);
             refreshStores();
         });
         root.findViewById(R.id.device_recheck).setOnClickListener(v -> refreshDevice());
@@ -118,25 +133,38 @@ public final class OverviewTab {
         String url = settings.macroUploadUrl();
         macroStatus.setText(a.getString(R.string.macro_status, new MacroStore(a).count(),
                 url.isEmpty() ? a.getString(R.string.macro_local) : a.getString(R.string.macro_upload, url)));
-        criticalStatus.setText(CriticalRules.isOn(a)
-                ? a.getString(R.string.critical_status_on, CriticalRules.origin(a), CriticalQueue.get(a).file().getPath())
-                : a.getString(R.string.critical_status_off));
+        RulesBundle.Info info = RulesBundle.info(a);
+        if (info == null) {
+            rulesStatus.setText(R.string.rules_builtin);
+        } else {
+            List<String> crit = RulesBundle.criticalNames(info);
+            rulesStatus.setText(a.getString(R.string.rules_installed, info.manifest.version,
+                    DateUtils.getRelativeTimeSpanString(info.installedAt),
+                    a.getString(RulesBundle.detectionRules(a) != null ? R.string.rules_detection_bundle : R.string.rules_detection_builtin),
+                    crit.isEmpty() ? a.getString(R.string.rules_none) : String.join(", ", crit),
+                    info.origin + (info.origin.equals(settings.rulesUrl()) ? "\n" + a.getString(R.string.rules_url_auto) : "")));
+        }
+        if (!settings.criticalEnabled()) criticalStatus.setText(R.string.critical_status_off);
+        else if (RulesBundle.criticalRules(a) == null) criticalStatus.setText(R.string.critical_status_no_rules);
+        else criticalStatus.setText(a.getString(R.string.critical_status_on,
+                    String.join(", ", RulesBundle.criticalNames(info)), CriticalQueue.get(a).file().getPath()));
     }
 
     interface Install {
-        void run() throws Exception;
+        RulesBundle.Info run() throws Exception;
     }
 
-    /** Compile / download the critical rules off the UI thread, then report. */
-    void installCritical(Install job) {
+    /** Install / download a rules set off the UI thread, then report. */
+    void installRules(Install job) {
         bg.execute(() -> {
             String msg;
             try {
-                job.run();
-                WatchFilter.setCriticalOn(true);
-                msg = a.getString(R.string.critical_installed);
+                RulesBundle.Info i = job.run();
+                WatchFilter.criticalActive(a);
+                msg = i == null ? a.getString(R.string.rules_up_to_date)
+                        : a.getString(R.string.rules_installed_ok, i.manifest.version);
             } catch (Exception e) {
-                msg = a.getString(R.string.critical_failed, e.getMessage());
+                msg = a.getString(R.string.rules_failed, e.getMessage());
             }
             String m = msg;
             a.runOnUiThread(() -> {
@@ -146,11 +174,11 @@ public final class OverviewTab {
         });
     }
 
-    public void installCritical(Uri uri) {
-        installCritical(() -> {
+    public void installRules(Uri uri) {
+        installRules(() -> {
             try (InputStream in = a.getContentResolver().openInputStream(uri)) {
                 if (in == null) throw new IOException("cannot open " + uri);
-                CriticalRules.install(a, in, String.valueOf(uri.getLastPathSegment()));
+                return RulesBundle.install(a, in, String.valueOf(uri.getLastPathSegment()), null);
             }
         });
     }

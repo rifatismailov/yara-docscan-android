@@ -11,6 +11,8 @@ import androidx.work.WorkManager;
 import androidx.work.Worker;
 import androidx.work.WorkerParameters;
 
+import yara.docscan.android.scan.RulesBundle;
+
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -35,6 +37,20 @@ public class WatchdogWorker extends Worker {
         Context ctx = getApplicationContext();
         WatchSettings s = new WatchSettings(ctx);
         if (!s.enabled()) return Result.success();
+        // rules update from the configured URL, once a day (installed only when it changed)
+        String url = s.rulesUrl();
+        if (!url.isEmpty() && System.currentTimeMillis() - s.lastRulesCheck() > 24L * 3600 * 1000) {
+            try {
+                RulesBundle.Info i = RulesBundle.installFromUrl(ctx, url, true);
+                s.setLastRulesCheck(System.currentTimeMillis());
+                if (i != null) {
+                    android.util.Log.i("WatchdogWorker", "rules updated to " + i.manifest.version);
+                    WatchFilter.criticalActive(ctx);
+                }
+            } catch (Exception e) {
+                android.util.Log.w("WatchdogWorker", "rules update failed: " + e.getMessage());
+            }
+        }
         // Sync-Macros: retention + upload retry, once an hour
         if (System.currentTimeMillis() - s.lastMacroSync() > 3600_000L) {
             s.setLastMacroSync(System.currentTimeMillis());

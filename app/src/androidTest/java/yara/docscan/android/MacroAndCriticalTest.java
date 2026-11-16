@@ -27,7 +27,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
-import yara.docscan.android.scan.CriticalRules;
+import yara.docscan.android.scan.RulesBundle;
 import yara.docscan.android.scan.DocScanner;
 import yara.docscan.android.scan.ScanResult;
 import yara.docscan.android.watch.MacroStore;
@@ -39,7 +39,7 @@ public class MacroAndCriticalTest {
 
     @After
     public void tearDown() {
-        CriticalRules.remove(Samples.app());
+        RulesBundle.remove(Samples.app());
     }
 
     @Test
@@ -80,8 +80,7 @@ public class MacroAndCriticalTest {
 
     @Test
     public void passThreeQueuesDocumentsWithTheCriticalPhrase() throws Exception {
-        InputStream rules = InstrumentationRegistry.getInstrumentation().getContext().getAssets().open("crit-test.yar");
-        CriticalRules.install(Samples.app(), rules, "crit-test.yar");
+        Samples.installCriticalBundle("crit-test.yar");
         DocScanner scanner = DocScanner.get(Samples.app());
         File dir = new File(Samples.app().getCacheDir(), "critical-test");
         dir.mkdirs();

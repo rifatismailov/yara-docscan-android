@@ -11,8 +11,11 @@ interface IScanWorker {
     /** Loads compiled rules (.yarc) from the descriptor. Returns the YARA version, or null on failure. */
     String init(in ParcelFileDescriptor rules);
 
-    /** Loads the compiled critical-information rules (pass 3); null = turn pass 3 off. */
-    boolean initCritical(in ParcelFileDescriptor rules);
+    /**
+     * Loads the compiled critical-information rules (pass 3); null = turn pass 3 off.
+     * chunkSize 0 / chunkOverlap -1: from the rule meta, else 700 / 120.
+     */
+    boolean initCritical(in ParcelFileDescriptor rules, int chunkSize, int chunkOverlap);
 
     /**
      * Scans the file. Result bundle: "json" (byte[] UTF-8 docscan JSON), "dex" (byte[] JSON of vendor

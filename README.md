@@ -30,8 +30,8 @@ git submodule update --init
 - **Macro store** (Save-Macro / Send-Macro / Sync-Macros): the decompressed VBA of every document with
   macros -> `files/macros/<document sha256>.vba.txt` with the PC header (host, file, sha256, findings,
   saved); optionally POSTed to the collector (`sent.txt`, hourly retry); kept 90 days / 500 MB.
-- **Pass 3 - critical information**: rules from E5Search are imported on the device (file or URL, like
-  `-Critical <file or URL>`); the text of each new document (and `.odt .ods .odp .txt .csv`) is extracted
+- **Pass 3 - critical information** (switch in the app, off by default): the rules come in a rules update
+  (below); the text of each new document (and `.odt .ods .odp .txt .csv`) is extracted
   and checked in the sandbox by `text.c` / `critical.c`; a match appends one JSON line (schema 2.0) to
   `files/critical/critical.json`. The record gets only `critical {queued, fragments, rules}`, never the text.
 - **-QuarantineGeneral** (off by default, as on the PC): exe / scripts / archives with a vendor match go to
@@ -42,6 +42,36 @@ git submodule update --init
 
 Distribution: APK / MDM (uses `MANAGE_EXTERNAL_STORAGE` and `QUERY_ALL_PACKAGES`). On Meizu, Xiaomi,
 Huawei & co. allow DocScan autostart, otherwise the firmware drops the boot / update broadcasts.
+
+## Rules updates
+
+One ZIP with the rule files in sub-folders and `manifest.json` saying what is what:
+
+```json
+{
+  "bundle": "docscan-rules",
+  "version": "2026.11.17-1",
+  "critical_information": "critical/yara_sender_critical_rules.yar",
+  "detection": "detection/docscan-index.yar",
+  "critical_chunk": {"size": 700, "overlap": 120},
+  "files": {"critical/yara_sender_critical_rules.yar": "<sha256>", "...": "..."}
+}
+```
+
+- `critical_information` - rules of pass 3 (path or list); `detection` - optional, replaces the docscan
+  rules built into the app (path or list; includes resolve relative to each file); `critical_chunk` and
+  `files` (sha256 of each file) are optional. At least one of the two rule sets is required.
+- In the app: **Захист -> Правила -> "З файлу"** (the ZIP) or **"За URL"** (where it is published; checked
+  once a day, installed only when it changed - ETag / version).
+- Installing unpacks into a staging folder (no path may leave it), checks the hashes and compiles every
+  set; only then it replaces the current set. A broken update leaves the previous rules.
+- Build one: `tools/make_rules_bundle.py --version 2026.11.17-1 --critical yara_sender_critical_rules.yar
+  [--detection-dir yara-docscan/docscan-project/rules --detection-index docscan-index.yar] -o rules.zip`
+- Pass 3 runs only when the switch **"Перевіряти документи на критичну інформацію"** is on and the
+  installed set has `critical_information`.
+- Parity with the PC: `tools/critical_reference.py <PC yara> <rules.yar> <docs> critical-expected.tsv`, then
+  `./gradlew connectedDebugAndroidTest -PcriticalCorpus=<docs> -PcriticalRules=<rules.yar>
+  -PcriticalExpected=critical-expected.tsv` (`CriticalCorpusTest`, file by file: status, rules, fragments).
 
 ## How it fits together
 
@@ -70,5 +100,6 @@ The JSON has the same fields as `yara64 --docscan-json`, plus `disarm_plan` (wha
 ## Not yet
 
 - sending the results to the SIEM (Wazuh / collector over HTTPS) and the pass-3 queue to E5Search
-- rule updates without a new APK; vendor YARA rules for Android malware (through `build_vendor_rules.py`)
+- signed rules updates (today: sha256 per file against corruption; authenticity relies on HTTPS / MDM)
+- vendor YARA rules for Android malware (through `build_vendor_rules.py`)
 - `ARCHIVE_*` policy rules ignore APKs on the Android side only - a `not APK` condition belongs upstream

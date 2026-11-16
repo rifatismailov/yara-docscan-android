@@ -44,6 +44,14 @@ public final class WatchFilter {
         criticalOn = on;
     }
 
+    /** Pass 3 runs: the switch is on and the installed rules have critical_information. */
+    public static boolean criticalActive(android.content.Context ctx) {
+        boolean on = new WatchSettings(ctx).criticalEnabled()
+                && yara.docscan.android.scan.RulesBundle.criticalRules(ctx) != null;
+        criticalOn = on;
+        return on;
+    }
+
     /** Archives whose documents / packages the docscan module inspects (the $isZip of the PC watcher). */
     static final Set<String> ARCHIVE_EXT = set(".zip", ".apks", ".xapk", ".apkm");
 

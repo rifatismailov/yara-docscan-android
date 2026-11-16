@@ -41,6 +41,7 @@ public final class DocScanner {
     private boolean bound;             // guarded by lock
     private boolean initialized;       // guarded by lock: the current worker has loaded the rules
     private long criticalStamp = -1;   // guarded by lock: the critical rules the current worker has
+    private long rulesStamp = -1;      // guarded by lock: the detection rules the current worker has
     private String version = "?";
 
     /** What else a scan does besides detection. */
@@ -193,7 +194,10 @@ public final class DocScanner {
 
     /** A connected worker with the rules loaded (binds / restarts it as needed). */
     private IScanWorker ensureWorker() throws DocScanException {
-        File rules = RulesStore.ensureCompiled(app);
+        // an installed rules update replaces the built-in detection rules
+        File bundled = RulesBundle.detectionRules(app);
+        File rules = bundled != null ? bundled : RulesStore.ensureCompiled(app);
+        long rs = RulesBundle.stamp(rules);
         synchronized (lock) {
             if (!bound) {
                 Intent i = new Intent(app, IsolatedScanService.class);
@@ -213,28 +217,34 @@ public final class DocScanner {
                     throw new DocScanException("interrupted");
                 }
             }
+            if (initialized && rs != rulesStamp) initialized = false;   // the rules changed
             if (!initialized) {
                 try (ParcelFileDescriptor pfd =
                              ParcelFileDescriptor.open(rules, ParcelFileDescriptor.MODE_READ_ONLY)) {
                     String v = worker.init(pfd);
                     if (v == null) {
-                        // stale or damaged cache: compile again next time
-                        rules.delete();
+                        // stale or damaged cache: compile again next time (a bad update: remove it)
+                        if (bundled != null) RulesBundle.remove(app);
+                        else rules.delete();
                         throw new DocScanException("the worker could not load the rules");
                     }
                     version = v;
                     initialized = true;
+                    rulesStamp = rs;
                 } catch (IOException | RemoteException e) {
                     worker = null;
                     throw new DocScanException("cannot initialise the scan worker: " + e.getMessage(), e);
                 }
             }
-            long stamp = CriticalRules.stamp(app);
+            File cr = RulesBundle.criticalRules(app);
+            long stamp = RulesBundle.stamp(cr);
             if (stamp != criticalStamp) {
-                File cr = CriticalRules.compiled(app);
-                try (ParcelFileDescriptor pfd = stamp == 0 ? null
+                RulesBundle.Info info = RulesBundle.info(app);
+                int size = info != null ? info.manifest.chunkSize : 0;
+                int overlap = info != null ? info.manifest.chunkOverlap : -1;
+                try (ParcelFileDescriptor pfd = cr == null ? null
                         : ParcelFileDescriptor.open(cr, ParcelFileDescriptor.MODE_READ_ONLY)) {
-                    if (!worker.initCritical(pfd)) Log.w(TAG, "the worker could not load the critical rules");
+                    if (!worker.initCritical(pfd, size, overlap)) Log.w(TAG, "the worker could not load the critical rules");
                     criticalStamp = stamp;
                 } catch (IOException | RemoteException e) {
                     Log.w(TAG, "critical rules not loaded", e);

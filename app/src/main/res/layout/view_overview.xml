@@ -113,10 +113,10 @@
 
         <TextView
             style="@style/SectionTitle"
-            android:text="@string/section_critical" />
+            android:text="@string/section_rules" />
 
         <TextView
-            android:id="@+id/critical_status"
+            android:id="@+id/rules_status"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:textAppearance="?attr/textAppearanceBody2" />
@@ -127,26 +127,42 @@
             android:orientation="horizontal">
 
             <com.google.android.material.button.MaterialButton
-                android:id="@+id/critical_file"
+                android:id="@+id/rules_file"
                 style="@style/Widget.MaterialComponents.Button.TextButton"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="@string/critical_from_file" />
+                android:text="@string/rules_from_file" />
 
             <com.google.android.material.button.MaterialButton
-                android:id="@+id/critical_url"
+                android:id="@+id/rules_url"
                 style="@style/Widget.MaterialComponents.Button.TextButton"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="@string/critical_from_url" />
+                android:text="@string/rules_from_url" />
 
             <com.google.android.material.button.MaterialButton
-                android:id="@+id/critical_off"
+                android:id="@+id/rules_check"
                 style="@style/Widget.MaterialComponents.Button.TextButton"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="@string/critical_off" />
+                android:text="@string/rules_check" />
         </LinearLayout>
+
+        <TextView
+            style="@style/SectionTitle"
+            android:text="@string/section_critical" />
+
+        <com.google.android.material.switchmaterial.SwitchMaterial
+            android:id="@+id/critical_switch"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/critical_switch" />
+
+        <TextView
+            android:id="@+id/critical_status"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textAppearance="?attr/textAppearanceCaption" />
 
         <TextView
             style="@style/SectionTitle"
